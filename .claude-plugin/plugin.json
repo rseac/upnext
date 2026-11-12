@@ -1,0 +1,27 @@
+{
+  "name": "next-steps-pane",
+  "version": "0.1.0",
+  "description": "A side pane that gathers the next steps Claude suggests into a tree you can click to run or dismiss.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "extractor": {
+      "type": "string",
+      "title": "How to find next steps",
+      "description": "heuristic: read headings, lists and offers in each reply (free, instant). model: ask Haiku to pull them out (smarter, costs a small call per turn; falls back to heuristic).",
+      "default": "heuristic",
+      "options": ["heuristic", "model"]
+    },
+    "autoOpen": {
+      "type": "boolean",
+      "title": "Open the pane when new steps arrive",
+      "description": "Opens the pane beside the transcript the first time steps are found, unless you closed it.",
+      "default": true
+    },
+    "scanToolOutput": {
+      "type": "boolean",
+      "title": "Read Bash output and task lists too",
+      "description": "Adds hints like \"run `npm audit fix`\" from Bash output, and open todo/task items.",
+      "default": true
+    }
+  }
+}
