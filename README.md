@@ -31,7 +31,10 @@ claude plugin install next-steps-pane --marketplace rseac/claude-next-steps-pane
 
 In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `rseac/claude-next-steps-pane`, then Add plugin.
 
-This repository is private: it installs only for people who can read it on GitHub and whose machine already holds a git credential for github.com (an SSH key, or `gh auth login` then `gh auth setup-git`).
+This repository is private, so before installing:
+
+1. Ask the owner to invite you as a collaborator on GitHub, and accept the invite.
+2. Make sure your machine has a git credential for github.com: an SSH key, or `gh auth login` then `gh auth setup-git`. The install never asks for one.
 
 ## Where steps come from
 
