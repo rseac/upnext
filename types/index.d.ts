@@ -19,6 +19,10 @@ export type Step = {
    * its prompt is made self-contained when it is sent, not stored that way.
    */
   isEarlier?: boolean
+  /** The last turn it was run, edited, moved or suggested again: its age counts from here. */
+  touchedTurn?: number
+  /** The turn it was first seen done; done steps leave after a few turns. */
+  doneTurn?: number
   /** The herdr agent pane it was handed to, and that agent's name, while it works. */
   handedPane?: string
   handedTo?: string
@@ -105,6 +109,8 @@ declare module 'claude-code' {
       isRanking: boolean
       /** Whether "Everything else" is shown under the ranked steps; null: shown while short. */
       showAll: boolean | null
+      /** Whether the "older" group at the bottom is unfolded. */
+      showOld: boolean
     }
   }
 }

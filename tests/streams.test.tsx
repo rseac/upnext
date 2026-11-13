@@ -81,7 +81,8 @@ test('steps from several turns are sorted into streams by what they are about', 
 
   const ui = await $.ui.mount(PANE)
   expect(await streams(ui)).toEqual([
-    'Auth: Move the token check into middleware; Add token expiry tests; Add token expiry tests for refresh tokens;',
+    // Newest first: the step suggested again (refreshed) and the new one above the older one.
+    'Auth: Move the token check into middleware; Add token expiry tests for refresh tokens; Add token expiry tests;',
     'Docs: Document the new CLI flags;',
   ])
   await ui.unmount()
@@ -102,13 +103,13 @@ test('a stream can be renamed and merged; a step can move to a new stream', asyn
   const docs = await headerKey(ui, /Docs/)
   await ui.press({ key: `rn:${docs}` })
   await ui.press({ key: `mg:${docs}:${auth}` })
-  expect(await streams(ui)).toEqual(['Security: Rotate the signing key; Document the new CLI flags; Fix broken README links;'])
+  expect(await streams(ui)).toEqual(['Security: Document the new CLI flags; Fix broken README links; Rotate the signing key;'])
 
   const links = (await ui.findAll({ type: 'Button', text: /Fix broken README links/ })).find(b => b.key?.startsWith('run:'))!
   const id = links.key!.slice(4)
   await ui.press({ key: `et:${id}` })
   await ui.press({ key: `mv:${id}:new` })
-  expect(await streams(ui)).toEqual(['Fix broken README links: Fix broken README links;', 'Security: Rotate the signing key; Document the new CLI flags;'])
+  expect(await streams(ui)).toEqual(['Fix broken README links: Fix broken README links;', 'Security: Document the new CLI flags; Rotate the signing key;'])
   await ui.unmount()
 })
 
@@ -125,7 +126,7 @@ test("the model's choice of stream is followed", async ($, on) => {
   })
   const ui = await $.ui.mount(PANE)
   for (let i = 0; i < 100 && !(await streams(ui)).join().includes('usage example'); i++) await tick()
-  expect(await streams(ui)).toEqual(['Docs: Document the new CLI flags; Add a usage example;'])
+  expect(await streams(ui)).toEqual(['Docs: Add a usage example; Document the new CLI flags;'])
   await ui.unmount()
 })
 
@@ -173,7 +174,7 @@ test('an archived stream comes back when a reply continues it', async ($, on) =>
   await ui.press({ key: `ar:${await headerKey(ui, /Auth/)}` })
   expect(await streams(ui)).toEqual([])
   await $.turn.complete({ ...TURN, answer: '## Auth follow-ups\n- Audit the token store', turnId: 't2' })
-  expect(await streams(ui)).toEqual(['Auth: Rotate the signing key; Audit the token store;'])
+  expect(await streams(ui)).toEqual(['Auth: Audit the token store; Rotate the signing key;'])
   await ui.unmount()
 })
 

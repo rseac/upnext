@@ -67,6 +67,18 @@ How they're picked, cheapest first:
 
 Everything else stays under **everything else**, folded once more than eight steps are open (`e` unfolds). The 1/2/3 row, ghost text and herdr's sidebar line all use the ranking. Set `rank` to `local` for the free score only, or `off` for the plain list.
 
+## Newest first, and steps that age
+
+Newest steps are on top, in each stream and across streams. Steps from one reply keep the order Claude gave them. Nothing piles up, because steps age:
+
+| Untouched for | What happens |
+| --- | --- |
+| 3 turns after it is done (✓) | It leaves the pane. |
+| 10 turns | It fades and ranks lower. |
+| 30 turns | It moves into a folded **older** group at the bottom (`o`), where **restore** brings it back on top. Nothing is deleted. |
+
+*Touched* means run, edited, moved, ticked or suggested again. A step Claude suggests again, in any stream, refreshes the one already there instead of adding a copy. Change the thresholds with `clearDoneAfter`, `fadeAfter` and `oldAfter` (0 turns each off). The todo list is left alone: Claude keeps that one.
+
 ## Where steps come from
 
 At the end of each turn the mod reads:
@@ -198,7 +210,7 @@ The row under the mouse lights up.
 | `1`–`9` | Drafts that numbered step (with the pane focused: click it, or ctrl+x tab). |
 | `j` `k`, then `d` `s` `x` | Move the highlight (›), then draft, send or drop the highlighted step. |
 | `m`, then `r` | Mark steps (◆) in any streams, then run them in order, one per turn. `u` clears the marks. |
-| `p` / `e` | Re-rank the most important steps / show or fold everything else. |
+| `p` / `e` / `o` | Re-rank the most important steps / show or fold everything else / show or fold older steps. |
 | `z` / `c` / `t` | Fold all / clear done / tidy. `q` stops a run in order. |
 
 Steps found in Bash output are only ever drafted, never sent straight away (their group shows ✎ instead of ▶), since that output can come from anywhere.
@@ -246,6 +258,9 @@ Step text comes from replies and tool output, which can quote files and web page
 | `scanToolOutput` | `true` | Reads Bash output and todo/task lists too. |
 | `autoTick` | `true` | Ticks steps off after a commit that covers them, or a test run that passes. |
 | `rank` | `auto` | `auto`: free scoring every turn, plus a Haiku re-rank when new steps arrive. `local`: free scoring only. `off`: no ranked section. |
+| `clearDoneAfter` | `3` | Turns a done step stays before it leaves. `0` keeps done steps. |
+| `fadeAfter` | `10` | Untouched turns before a step fades and ranks lower. `0` turns fading off. |
+| `oldAfter` | `30` | Untouched turns before a step moves to "older". `0` keeps every step in the tree. |
 | `paneStyle` | `auto` | `auto`: inside herdr, a popup on a key and a sidebar line; elsewhere, the pane inside Claude. `split`: inside herdr, a pane beside Claude's that stays open. `claude`: always the pane inside Claude (`/upnext herdr` still works). |
 | `herdrLabel` | `true` | Inside herdr, sets the sidebar line (`upnext` token) and the title of Claude's pane. |
 | `herdrGlyphs` | `symbols` | `ascii` draws the herdr pane with plain characters. |

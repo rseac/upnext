@@ -1,6 +1,6 @@
 {
   "name": "upnext",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
   "author": {
     "name": "rseac"
@@ -60,6 +60,24 @@
       "title": "Nudge about idle streams after this many turns",
       "description": "When a stream with open steps has had no new or finished steps for this many turns, a toast says so once, so you can pick it up or archive it. 0 turns this off.",
       "default": 10
+    },
+    "clearDoneAfter": {
+      "type": "number",
+      "title": "Remove done steps after this many turns",
+      "description": "A step marked done (✓) leaves the pane this many turns later. 0 keeps done steps until you clear them.",
+      "default": 3
+    },
+    "fadeAfter": {
+      "type": "number",
+      "title": "Fade untouched steps after this many turns",
+      "description": "A step nobody has run, edited, moved or suggested again for this many turns is drawn dim and ranks lower. 0 turns fading off.",
+      "default": 10
+    },
+    "oldAfter": {
+      "type": "number",
+      "title": "Move untouched steps to \"older\" after this many turns",
+      "description": "Past this many untouched turns a step moves into a folded \"older\" group at the bottom, where you can restore it. Nothing is deleted. 0 keeps every step in the tree.",
+      "default": 30
     },
     "autoTick": {
       "type": "boolean",

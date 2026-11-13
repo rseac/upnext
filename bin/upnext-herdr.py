@@ -92,7 +92,7 @@ ASCII = {
     "more": "...",
 }
 
-HELP = "1-9 draft · j/k move · enter draft · s send · h agent · m mark · x drop · p re-rank · e everything else · q quit"
+HELP = "1-9 draft · j/k move · enter draft · s send · h agent · m mark · x drop · p re-rank · e everything else · o older · q quit"
 HELP_ASCII = HELP
 
 
@@ -232,6 +232,7 @@ class Viewer:
         self.picker = None  # {"ids", "text", "agents": [(pane, label)], "error"}
         self.marked = []  # step ids, in the order marked
         self.show_all = None  # "everything else" under the ranked steps; None: shown while short
+        self.show_old = False
         self.numbered = []  # step ids by number (1-based), open steps in view order
         self.done = False
         self.g = ASCII if ascii_only else FANCY
@@ -428,7 +429,8 @@ class Viewer:
                         if k:
                             line.add(" ", draft, strike=is_done)
                         fg = CODE if code and not is_done else text_fg
-                        line.add(w, draft, fg=fg, dim=is_done, strike=is_done, bold=is_new)
+                        stale = bool(s.get("isStale")) and not is_done
+                        line.add(w, draft, fg=fg, dim=is_done or stale, strike=is_done, bold=is_new)
                     if n == 0 and is_new:
                         line.add(" •", draft, fg=color, bold=True)
                     if n == 0 and s.get("handedTo"):
@@ -441,6 +443,24 @@ class Viewer:
                         line.add(g["send"], ("send", sid), dim=True, hot=71)
                         line.add(" ")
                         line.add(g["drop"], ("dismiss", sid), dim=True, hot=167)
+                    lines.append(line)
+        older = self.state.get("older", [])
+        if older:
+            lines.append(Line())
+            lines.append(Line().add(f" {g['unfolded'] if self.show_old else g['folded']} older · {len(older)}", ("older", ""), dim=True))
+            if self.show_old:
+                for o in older:
+                    self.rows.append(("old", o, o))
+                    row = len(self.rows) - 1
+                    line = Line(row)
+                    line.add("   ")
+                    line.add(g["stream"] + " ", fg=COLORS.get(o.get("color")))
+                    tail = f" · {o.get('age', '?')} turns"
+                    line.add(clip(safe(o.get("text", "")), max(8, cols - 16 - len(tail)), g["more"]), ("restore", o["id"]), dim=True)
+                    line.add(tail, dim=True)
+                    line.pad_to(cols - 4)
+                    line.add(" ")
+                    line.add(g["drop"], ("dismiss", o["id"]), dim=True, hot=167)
                     lines.append(line)
         return lines
 
@@ -566,6 +586,10 @@ class Viewer:
         verb, target = zone
         if verb == "toggle":
             self.folded.symmetric_difference_update({target})
+        elif verb == "older":
+            self.show_old = not self.show_old
+        elif verb == "restore":
+            self.act("restore", target, "restored to the top")
         elif verb == "all":
             open_count = sum(1 for r in self.state.get("roots", []) for s in r.get("steps", []) if s.get("status") in ("open", "failed"))
             self.show_all = not (self.show_all if self.show_all is not None else open_count <= 8)
@@ -637,6 +661,11 @@ class Viewer:
             self.cursor = max(0, len(self.rows) - 1)
         elif sel is None:
             pass
+        elif sel[0] == "old":
+            if k in ("\r", "\n", "d"):
+                self.run_zone(("restore", sel[2]["id"]))
+            elif k == "x":
+                self.run_zone(("dismiss", sel[2]["id"]))
         elif k == " " or (k in ("\r", "\n") and sel[0] == "root"):
             self.run_zone(("toggle", sel[1].get("id")))
         elif k in ("\r", "\n", "d"):
@@ -655,6 +684,8 @@ class Viewer:
             self.marked = []
         elif k == "e":
             self.run_zone(("all", ""))
+        elif k == "o":
+            self.run_zone(("older", ""))
         elif k == "p":
             self.act("rank", "", "re-ranking…")
         elif k == "r" and self.marked:
