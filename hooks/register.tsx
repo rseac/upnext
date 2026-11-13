@@ -39,6 +39,8 @@ const tidyingA = atom({ plugin: 'upnext', key: 'isTidying' } as const, false)
 const filterA = atom({ plugin: 'upnext', key: 'filter' } as const, null as string | null)
 const showArchivedA = atom({ plugin: 'upnext', key: 'showArchived' } as const, false)
 const viewerA = atom({ plugin: 'upnext', key: 'herdrViewer' } as const, null as string | null)
+const cursorA = atom({ plugin: 'upnext', key: 'cursor' } as const, null as string | null)
+const markedA = atom({ plugin: 'upnext', key: 'marked' } as const, [] as string[])
 
 // Options, set by register (it runs again on every reload), and the project.
 const cfg = {
@@ -823,6 +825,22 @@ async function startInOrder($: EngineInterface, rootId: string) {
   await sendNextInOrder($)
 }
 
+/** Runs chosen steps (from any streams) one per turn, in the order given. */
+async function startQueue($: EngineInterface, ids: string[]) {
+  if (await read($, autopilotA)) {
+    $.ui.toast('upnext: steps are already running in order; stop them first')
+    return
+  }
+  const roots = await read($, rootsA)
+  const queue = ids.filter(id => {
+    const hit = find(roots, id)
+    return hit !== undefined && hit.step.status !== 'done' && hit.step.status !== 'running'
+  })
+  if (queue.length === 0) return
+  await update($, autopilotA, () => ({ rootId: '', queue, total: queue.length }))
+  await sendNextInOrder($)
+}
+
 async function sendNextInOrder($: EngineInterface) {
   const ap = await read($, autopilotA)
   if (!ap) return
@@ -1029,6 +1047,58 @@ async function setListRoot($: EngineInterface, id: string, title: string, steps:
 const listStep = (id: string, text: string, status: StepStatus): Step | undefined => {
   const t = clean(text, 300)
   return t === '' ? undefined : { id, text: t, prompt: promptFor('todo', t, []), status, isCollapsed: false, children: [] }
+}
+
+// ---- The keyboard in the pane: numbers, a highlight, marks ---------------------
+
+/** Steps you can act on, in the order the pane shows them: open ones in unfolded groups. */
+function visibleOrder(roots: Root[], filterId: string | null): Step[] {
+  const focus = filterId === null ? undefined : roots.find(r => r.id === filterId && r.isArchived !== true)
+  const shown = focus ? [focus] : live(roots)
+  const out: Step[] = []
+  const walk = (steps: Step[]) => {
+    for (const s of steps) {
+      if (s.status === 'open' || s.status === 'failed') out.push(s)
+      if (!s.isCollapsed) walk(s.children)
+    }
+  }
+  for (const r of shown) if (!r.isCollapsed) walk(r.steps)
+  return out
+}
+
+async function moveCursor($: EngineInterface, delta: number) {
+  const order = visibleOrder(await read($, rootsA), await read($, filterA))
+  if (order.length === 0) return
+  const cur = await read($, cursorA)
+  // Nothing highlighted yet shows the first step highlighted, so start from there.
+  const i = Math.max(0, order.findIndex(s => s.id === cur))
+  const next = Math.max(0, Math.min(order.length - 1, i + delta))
+  await update($, cursorA, () => order[next]!.id)
+}
+
+/** The highlighted step, or the first one when nothing is highlighted. */
+async function cursorStep($: EngineInterface): Promise<string | undefined> {
+  const order = visibleOrder(await read($, rootsA), await read($, filterA))
+  const cur = await read($, cursorA)
+  return (order.find(s => s.id === cur) ?? order[0])?.id
+}
+
+async function onCursor($: EngineInterface, verb: 'draft' | 'send' | 'drop' | 'mark') {
+  const id = await cursorStep($)
+  if (id === undefined) return
+  if (verb === 'draft' || verb === 'send') return actOnStep($, id, verb)
+  if (verb === 'drop') {
+    await moveCursor($, 1)
+    return dismissStep($, id)
+  }
+  await update($, markedA, list => (list.includes(id) ? list.filter(x => x !== id) : [...list, id].slice(0, 20)))
+  await moveCursor($, 1)
+}
+
+async function runMarked($: EngineInterface) {
+  const marked = await read($, markedA)
+  await update($, markedA, () => [])
+  await startQueue($, marked)
 }
 
 // ---- A /clear: what was in flight stops, and every step becomes "earlier" ----
@@ -1248,29 +1318,34 @@ async function openPopup($: EngineInterface): Promise<boolean> {
 
 // ---- Handing a step to another herdr agent ------------------------------------
 
-/** Sends a step to another agent pane, then waits (off the turn's path) for it to finish. */
-async function handOff($: EngineInterface, id: string, pane: string, label: string) {
+/** Sends steps to another agent pane, then waits (off the turn's path) for it to finish. */
+async function handOff($: EngineInterface, ids: string[], pane: string, label: string) {
   const roots = await read($, rootsA)
-  const hit = find(roots, id)
-  if (!hit || !/^[A-Za-z0-9:_-]{1,40}$/.test(pane)) return
+  const hits = ids.flatMap(id => find(roots, id) ?? [])
+  if (hits.length === 0 || !/^[A-Za-z0-9:_-]{1,40}$/.test(pane)) return
   const name = clean(label, 40) || pane
-  const prompt = (promptToSend(roots, id) ?? promptForStep(hit.step)) + `\n\n(Handed over from a Claude Code session working in ${herdr.cwd}. Do the work there.)`
+  const body =
+    hits.length === 1
+      ? (promptToSend(roots, hits[0]!.step.id) ?? promptForStep(hits[0]!.step))
+      : `Please work through these steps, in order: ${hits.map((h, i) => `(${i + 1}) ${promptToSend(roots, h.step.id) ?? promptForStep(h.step)}`).join(' ')}`
+  const prompt = body + `\n\n(Handed over from a Claude Code session working in ${herdr.cwd}. Do the work there.)`
   // One line: a newline would submit the prompt early in the agent's own prompt box.
   const text = prompt.replace(/\s*\n\s*/g, ' ').slice(0, 4000)
   if ((await herdrRun($, ['agent', 'prompt', pane, text])) === undefined) {
     $.ui.toast(`upnext: could not hand the step to ${name} (is it busy or waiting on you?)`)
     return
   }
-  const ids = openIds([hit.step, ...allSteps(hit.step.children)])
+  const tops = hits.map(h => h.step.id)
+  const kids = hits.flatMap(h => openIds(allSteps(h.step.children)))
   await changeRoots($, rs =>
-    mapAll(rs, s => (s.id === id ? { ...s, status: 'running', handedPane: pane, handedTo: name } : ids.includes(s.id) ? { ...s, status: 'running' } : s)),
+    mapAll(rs, s => (tops.includes(s.id) ? { ...s, status: 'running', handedPane: pane, handedTo: name } : kids.includes(s.id) ? { ...s, status: 'running' } : s)),
   )
-  $.ui.toast(`upnext: ➜ handed to ${name}`)
-  void watchHandoff($, id, pane, name, true)
+  $.ui.toast(`upnext: ➜ handed ${hits.length === 1 ? 'a step' : `${hits.length} steps`} to ${name}`)
+  void watchHandoff($, tops, pane, name, true)
 }
 
 /** Waits for the agent to settle; a blocked agent gets a toast and more waiting. */
-async function watchHandoff($: EngineInterface, id: string, pane: string, name: string, isFresh: boolean) {
+async function watchHandoff($: EngineInterface, tops: string[], pane: string, name: string, isFresh: boolean) {
   for (let round = 0; round < 12; round++) {
     let status = ''
     try {
@@ -1294,19 +1369,21 @@ async function watchHandoff($: EngineInterface, id: string, pane: string, name: 
     const out = (await herdrRun($, ['agent', 'read', pane, '--source', 'recent', '--lines', '30'])) ?? ''
     const verdict: StepStatus = FAILED.test(out) ? 'failed' : 'done'
     const roots = await read($, rootsA)
-    const hit = find(roots, id)
-    if (!hit || hit.step.handedPane !== pane) return
-    const ids = [hit.step, ...allSteps(hit.step.children)].map(s => s.id)
+    const hits = tops.flatMap(id => find(roots, id) ?? []).filter(h => h.step.handedPane === pane)
+    if (hits.length === 0) return
+    const mine = hits.map(h => h.step.id)
+    const kids = hits.flatMap(h => allSteps(h.step.children).map(s => s.id))
     await changeRoots($, rs =>
       mapAll(rs, s =>
-        s.id === id
+        mine.includes(s.id)
           ? { ...s, status: verdict, handedPane: undefined, handedTo: undefined }
-          : ids.includes(s.id) && s.status !== 'done'
+          : kids.includes(s.id) && s.status !== 'done'
             ? { ...s, status: verdict }
             : s,
       ),
     )
-    $.ui.toast(`upnext: ${verdict === 'done' ? '✓' : '✗'} ${name} finished: ${plain(hit.step.text).slice(0, 50)}`)
+    const what = hits.length === 1 ? plain(hits[0]!.step.text).slice(0, 50) : `${hits.length} steps`
+    $.ui.toast(`upnext: ${verdict === 'done' ? '✓' : '✗'} ${name} finished: ${what}`)
     return
   }
 }
@@ -1357,17 +1434,23 @@ async function pollViewer($: EngineInterface) {
     const text = await $.fs.read(actionsPath())
     await $.fs.write(actionsPath(), '')
     for (const line of text.split('\n').slice(0, 20)) {
-      let a: { verb?: unknown; id?: unknown; pane?: unknown; label?: unknown }
+      let a: { verb?: unknown; id?: unknown; ids?: unknown; pane?: unknown; label?: unknown }
       try {
         a = JSON.parse(line) as typeof a
       } catch {
         continue
       }
-      if (typeof a.id !== 'string' || a.id.length > 120) continue
-      if (a.verb === 'handoff') {
-        if (typeof a.pane === 'string') void handOff($, a.id, a.pane, typeof a.label === 'string' ? a.label : a.pane)
+      const many = Array.isArray(a.ids) ? a.ids.filter((x): x is string => typeof x === 'string' && x.length <= 120).slice(0, 20) : []
+      if (a.verb === 'run-marked') {
+        if (many.length > 0) await startQueue($, many)
         continue
       }
+      if (a.verb === 'handoff') {
+        const ids = many.length > 0 ? many : typeof a.id === 'string' ? [a.id] : []
+        if (typeof a.pane === 'string' && ids.length > 0) void handOff($, ids, a.pane, typeof a.label === 'string' ? a.label : a.pane)
+        continue
+      }
+      if (typeof a.id !== 'string' || a.id.length > 120) continue
       await viewerAction($, String(a.verb), a.id)
     }
   } catch (error) {
@@ -1468,9 +1551,11 @@ export const register: Register = (on, options) => {
     if (keepAcrossSessions) await restore($)
     const roots = await changeRoots($, r => r)
     if (herdr.inside !== '') {
+      const byPane = new Map<string, Step[]>()
       for (const step of roots.flatMap(r => allSteps(r.steps))) {
-        if (step.handedPane !== undefined) void watchHandoff($, step.id, step.handedPane, step.handedTo ?? step.handedPane, false)
+        if (step.handedPane !== undefined) byPane.set(step.handedPane, [...(byPane.get(step.handedPane) ?? []), step])
       }
+      for (const [pane, steps] of byPane) void watchHandoff($, steps.map(s => s.id), pane, steps[0]!.handedTo ?? pane, false)
     }
     if (cfg.autoOpen && live(roots).length > 0 && !(await read($, closedA))) {
       if (herdr.pane !== '') void autoViewer($)
@@ -1755,6 +1840,11 @@ export const register: Register = (on, options) => {
     const archived = roots.filter(r => r.isArchived === true)
     const shown = focus ? [focus] : live(roots)
     const streams = live(roots).filter(r => r.kind === 'stream')
+    const order = visibleOrder(roots, filterId)
+    const numberOf = new Map(order.map((s, i) => [s.id, i + 1]))
+    const cursorRaw = await read($, cursorA)
+    const cursorId = (order.find(s => s.id === cursorRaw) ?? order[0])?.id
+    const marked = await read($, markedA)
     const cols = Math.max(24, e.props.bodyColumns)
     const steps = shown.flatMap(r => allSteps(r.steps))
     const done = steps.filter(s => s.status === 'done').length
@@ -1796,7 +1886,7 @@ export const register: Register = (on, options) => {
               running in order · step {ap.total - ap.queue.length} of {ap.total}
             </Text>
             <Box flexGrow={1} />
-            <Button key="ap-stop" plain hotkey="s" hover={{ color: 'error' }} onPress={() => void stopInOrder($)}>
+            <Button key="ap-stop" plain hotkey="q" hover={{ color: 'error' }} onPress={() => void stopInOrder($)}>
               Stop
             </Button>
           </Box>
@@ -1915,9 +2005,16 @@ export const register: Register = (on, options) => {
         const isDone = step.status === 'done'
         // Tool output is only ever drafted, so it gets no send control.
         const hasAlt = !(root.kind === 'tool' && !cfg.sendOnClick)
-        const textW = cols - widthOf(first) - 2 - 2 - (hasAlt ? 7 : 5)
+        const n = numberOf.get(step.id)
+        const isCursor = step.id === cursorId
+        const isMarked = marked.includes(step.id)
+        const textW = cols - widthOf(first) - 2 - 2 - (hasAlt ? 7 : 5) - (n !== undefined && n <= 9 ? 3 : 0) - (isMarked ? 2 : 0)
         const lines = wrapRuns(runsOf(step.text), textW, 3)
-        const body: (string | JSX.Element)[] = [<Text color={st.color}>{st.glyph}</Text>, ' ']
+        const body: (string | JSX.Element)[] = [
+          ...(isMarked ? [<Text color="warning">◆ </Text>] : []),
+          <Text color={st.color}>{st.glyph}</Text>,
+          ' ',
+        ]
         lines.forEach((line, n) => {
           if (n > 0) body.push('\n  ')
           for (const run of line) {
@@ -1971,7 +2068,21 @@ export const register: Register = (on, options) => {
         const prefix = [first, ...lines.slice(1).map(() => more)].join('\n')
         const row = (
           <Box key={`s:${step.id}`} flexDirection="row" alignItems="flex-start" hover={scope ? { scope } : undefined}>
-            <Text dimColor>{prefix}</Text>
+            {isCursor ? (
+              <Text>
+                <Text color="claude" bold>
+                  ›
+                </Text>
+                <Text dimColor>{prefix.slice(1)}</Text>
+              </Text>
+            ) : (
+              <Text dimColor>{prefix}</Text>
+            )}
+            {n !== undefined && n <= 9 && (
+              <Button key={`n:${step.id}`} plain hotkey={String(n)} onPress={() => void click($, step.id)}>
+                {' '}
+              </Button>
+            )}
             {hasKids ? (
               <Button key={`tg:${step.id}`} plain dimColor onPress={() => void toggle($, step.id)}>
                 {step.isCollapsed ? '▸ ' : '▾ '}
@@ -2151,10 +2262,42 @@ export const register: Register = (on, options) => {
             <Button key="tidy" plain hotkey="t" dimColor onPress={() => void tidy($)}>
               Tidy
             </Button>
-            <Button key="clear-all" plain hotkey="x" dimColor onPress={() => void clearAll($)}>
+            <Button key="clear-all" plain dimColor onPress={() => void clearAll($)}>
               Clear all
             </Button>
           </Box>
+          {order.length > 0 && (
+            <Box key="keys" flexDirection="row" flexWrap="wrap" columnGap={2}>
+              <Button key="k-down" plain hotkey="j" dimColor onPress={() => void moveCursor($, 1)}>
+                down
+              </Button>
+              <Button key="k-up" plain hotkey="k" dimColor onPress={() => void moveCursor($, -1)}>
+                up
+              </Button>
+              <Button key="k-draft" plain hotkey="d" dimColor onPress={() => void onCursor($, 'draft')}>
+                draft
+              </Button>
+              <Button key="k-send" plain hotkey="s" dimColor onPress={() => void onCursor($, 'send')}>
+                send
+              </Button>
+              <Button key="k-drop" plain hotkey="x" dimColor onPress={() => void onCursor($, 'drop')}>
+                drop
+              </Button>
+              <Button key="k-mark" plain hotkey="m" dimColor onPress={() => void onCursor($, 'mark')}>
+                mark
+              </Button>
+              {marked.length > 0 && (
+                <Button key="k-run" plain hotkey="r" hover={{ color: 'success' }} onPress={() => void runMarked($)}>
+                  {`run ${marked.length} marked`}
+                </Button>
+              )}
+              {marked.length > 0 && (
+                <Button key="k-unmark" plain hotkey="u" dimColor onPress={() => void update($, markedA, () => [])}>
+                  unmark
+                </Button>
+              )}
+            </Box>
+          )}
           {addMine}
           <Text dimColor>{hint}</Text>
         </Box>

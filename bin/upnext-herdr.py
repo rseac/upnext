@@ -92,8 +92,8 @@ ASCII = {
     "more": "...",
 }
 
-HELP = "click draft · ▶ send · ➜ agent · ✕ drop · ⊟ archive · j/k enter s h x a · q quit"
-HELP_ASCII = "click draft  > send  @ agent  x drop  _ archive  j/k enter s h x a  q quit"
+HELP = "1-9 draft · j/k move · enter draft · s send · h agent · m mark · x drop · a archive · q quit"
+HELP_ASCII = HELP
 
 
 def cells(text):
@@ -229,7 +229,9 @@ class Line:
 class Viewer:
     def __init__(self, state_path, actions_path, ascii_only, popup=False):
         self.popup = popup
-        self.picker = None  # {"id", "text", "agents": [(pane, label)], "error"}
+        self.picker = None  # {"ids", "text", "agents": [(pane, label)], "error"}
+        self.marked = []  # step ids, in the order marked
+        self.numbered = []  # step ids by number (1-based), open steps in view order
         self.done = False
         self.g = ASCII if ascii_only else FANCY
         self.help = HELP_ASCII if ascii_only else HELP
@@ -285,6 +287,7 @@ class Viewer:
         g = self.g
         lines = []
         self.rows = []
+        self.numbered = []
         roots = self.state.get("roots", [])
         for ri, r in enumerate(roots):
             if ri > 0:
@@ -348,17 +351,24 @@ class Viewer:
                 text_fg = {"queued": 105, "running": 179, "failed": 167, "done": 71}.get(st)
                 if text_fg is None and s.get("isCommand"):
                     text_fg = CODE
-                text_w = max(8, cols - cells(lead + branch) - 2 - 7 - (2 if is_new else 0))
+                if st in ("open", "failed"):
+                    self.numbered.append(sid)
+                num = len(self.numbered) if st in ("open", "failed") else None
+                is_marked = sid in self.marked
+                text_w = max(8, cols - cells(lead + branch) - 2 - 7 - 2 - (2 if is_new else 0) - (2 if is_marked else 0))
                 texts = wrap_words(words_of(safe(s.get("text", ""))), text_w, 3, g["more"])
                 draft = ("draft", sid)
                 for n, words in enumerate(texts):
                     line = Line(row)
                     if n == 0:
                         line.add(lead + branch, fg=color, dim=True)
+                        line.add(f"{num} " if num is not None and num <= 9 else "  ", draft, fg=COLORS["claude"], bold=True)
+                        if is_marked:
+                            line.add("◆ " if g is FANCY else "* ", draft, fg=179, bold=True)
                         line.add(g.get(st, g["open"]), draft, fg=STATUS_COLOR.get(st))
                         line.add(" ", draft)
                     else:
-                        line.add(cont + "  ", fg=color, dim=True)
+                        line.add(cont + "    " + ("  " if is_marked else ""), fg=color, dim=True)
                     for k, (w, code) in enumerate(words):
                         if k:
                             line.add(" ", draft, strike=is_done)
@@ -411,7 +421,10 @@ class Viewer:
             body = [Line(), Line().add("   Nothing queued up.", bold=True), Line().add("   Steps land here when a reply", dim=True), Line().add("   suggests or offers more.", dim=True)]
         self.cursor = min(self.cursor, max(0, len(self.rows) - 1))
 
-        foot_text = [self.note] if time.time() < self.note_until else wrap(self.help, cols - 1, 2, g["more"])
+        help_text = self.help
+        if self.marked:
+            help_text = f"{len(self.marked)} marked · r run in order · h hand all to an agent · u unmark · m (un)mark"
+        foot_text = [self.note] if time.time() < self.note_until else wrap(help_text, cols - 1, 2, g["more"])
         foot = [Line().add(g["rule"] * cols, dim=True)] + [Line().add(" " + t, dim=True) for t in foot_text]
         room = max(1, rows - 2 - len(foot))
 
@@ -460,7 +473,7 @@ class Viewer:
         lines.append(Line().add("   1-9 or click to pick · Esc to go back", dim=True))
         return lines
 
-    def open_picker(self, sid, text):
+    def open_picker(self, ids, text):
         """Lists the other agent panes herdr knows, to hand a step to one."""
         herdr = os.environ.get("HERDR_BIN_PATH") or "herdr"
         me = {os.environ.get("HERDR_PANE_ID"), self.state.get("claudePane")}
@@ -477,14 +490,15 @@ class Viewer:
             error = f"could not list agents: {e}"
         if not agents and not error:
             error = "no other agent panes in herdr"
-        self.picker = {"id": sid, "text": text, "agents": agents, "error": error}
+        self.picker = {"ids": ids, "text": text, "agents": agents, "error": error}
 
     def pick(self, i):
         p = self.picker
         if p and 0 <= i < len(p["agents"]):
             pane, label = p["agents"][i]
             name = label.split(" · ")[0] + " " + pane
-            self.act("handoff", p["id"], f"handed to {name}", pane=pane, label=name)
+            self.act("handoff", p["ids"][0], f"handed to {name}", ids=p["ids"], pane=pane, label=name)
+            self.marked = []
         self.picker = None
 
     def screen_row(self, y):
@@ -500,9 +514,12 @@ class Viewer:
         elif verb == "pick":
             self.pick(target)
         elif verb == "hand":
-            step = next((r[2] for r in self.rows if r[0] == "step" and r[2].get("id") == target), None)
-            if step:
-                self.open_picker(target, step.get("text", ""))
+            if self.marked:
+                self.open_picker(list(self.marked), f"{len(self.marked)} marked steps, in the order marked")
+            else:
+                step = next((r[2] for r in self.rows if r[0] == "step" and r[2].get("id") == target), None)
+                if step:
+                    self.open_picker([target], step.get("text", ""))
         elif verb == "draft":
             self.act("draft", target, "drafted in Claude's prompt box")
             self.leave()
@@ -552,6 +569,10 @@ class Viewer:
             self.cursor = min(self.cursor + 1, max(0, len(self.rows) - 1))
         elif k in ("k", f"{ESC}A"):
             self.cursor = max(0, self.cursor - 1)
+        elif k.isdigit() and k != "0":
+            n = int(k)
+            if n <= len(self.numbered):
+                self.run_zone(("draft", self.numbered[n - 1]))
         elif k == "g":
             self.cursor = 0
         elif k == "G":
@@ -566,8 +587,18 @@ class Viewer:
             self.run_zone(("send", sel[2]["id"]) if sel[0] == "step" else ("send-all", sel[1]["id"]))
         elif k == "x":
             self.run_zone(("dismiss", (sel[2] or sel[1])["id"]))
-        elif k == "h" and sel[0] == "step":
-            self.run_zone(("hand", sel[2]["id"]))
+        elif k == "h" and (sel[0] == "step" or self.marked):
+            self.run_zone(("hand", sel[2]["id"] if sel[0] == "step" else ""))
+        elif k == "m" and sel[0] == "step":
+            sid = sel[2]["id"]
+            self.marked = [x for x in self.marked if x != sid] if sid in self.marked else self.marked + [sid]
+            self.cursor = min(self.cursor + 1, max(0, len(self.rows) - 1))
+        elif k == "u":
+            self.marked = []
+        elif k == "r" and self.marked:
+            self.act("run-marked", self.marked[0], f"running {len(self.marked)} steps in order", ids=list(self.marked))
+            self.marked = []
+            self.done = self.popup
         elif k == "a" and sel[1].get("kind") == "stream":
             self.run_zone(("archive", sel[1]["id"]))
         return True

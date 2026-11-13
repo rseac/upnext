@@ -88,6 +88,10 @@ declare module 'claude-code' {
       showArchived: boolean
       /** The herdr pane the viewer runs in, once opened. */
       herdrViewer: string | null
+      /** The highlighted step in the pane (keyboard: j/k, a number). */
+      cursor: string | null
+      /** Steps marked to run together (m), in the order marked. */
+      marked: string[]
     }
   }
 }

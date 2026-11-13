@@ -131,13 +131,17 @@ The popup needs `python3`. It reads a state file in `~/.claude/upnext/herdr/` an
 
 | Mouse | Keys | What it does |
 | --- | --- | --- |
-| Click a step | Enter or `d` | Drafts it in Claude's prompt box (the popup closes; the split moves you to Claude) |
-| ▶ | `s` | Sends the step (on a stream: all its open steps) |
-| ➜ | `h` | Hands the step to another agent pane |
+| Click a step | `1`–`9` | Drafts that numbered step in Claude's prompt box (the popup closes; the split moves you to Claude) |
+| | `j` `k` ↓ ↑ `g` `G` | Moves the highlight |
+| | Enter or `d` | Drafts the highlighted step |
+| ▶ | `s` | Sends it (on a stream: all its open steps) |
+| ➜ | `h` | Hands it to another agent pane; with steps marked, hands them all, as one numbered prompt |
+| | `m` / `u` | Marks or unmarks it (◆) and moves down / clears all marks |
+| | `r` | Runs the marked steps in order, one per turn, stopping at one that isn't done |
 | ✕ | `x` | Dismisses the step or stream |
 | ⊟ | `a` | Archives the stream |
 | Click a stream's name | Space | Folds or unfolds it |
-| Wheel | `j` `k` ↓ ↑ `g` `G` | Scrolls / moves |
+| Wheel | | Scrolls |
 | | `q` or Esc | Closes |
 
 Colours carry meaning:
@@ -159,7 +163,7 @@ The row under the mouse lights up.
 | Click a step | Puts its prompt in the prompt box as a draft. Edit it, then press Enter. Its sub-steps go along with it. |
 | ▶ on a step | Sends it right away. |
 | ▶ on a group | Sends every open step in the group as one prompt. |
-| ▶▶ on a group | Runs the group in order, one step per turn. It moves on when a step is ✓ and stops at the first that isn't, or when you interrupt. A bar at the top shows progress, with Stop (`s`). |
+| ▶▶ on a group | Runs the group in order, one step per turn. It moves on when a step is ✓ and stops at the first that isn't, or when you interrupt. A bar at the top shows progress, with Stop (`q`). |
 | + on a group | Adds your own step to that group. |
 | ✎ on a step | Edits its text in place. Enter saves; ✕ cancels. |
 | ⇶ on a group | Hands each open step (up to five) to its own background agent. Each step shows ⇶ while its agent works, then ✓ or ✗, with a toast. |
@@ -170,7 +174,10 @@ The row under the mouse lights up.
 | ▾ / ▸ | Folds or unfolds. |
 | The field at the bottom | Adds your own step to a **Your steps** group. |
 | Tidy (`t`) | Asks a fork of the session which open steps are already done or no longer relevant, marks or removes them, and says what changed. Costs about one short reply per click. |
-| `z` / `c` / `x` | Fold all / clear done / clear all (while the pane has focus). |
+| `1`–`9` | Drafts that numbered step (with the pane focused: click it, or ctrl+x tab). |
+| `j` `k`, then `d` `s` `x` | Move the highlight (›), then draft, send or drop the highlighted step. |
+| `m`, then `r` | Mark steps (◆) in any streams, then run them in order, one per turn. `u` clears the marks. |
+| `z` / `c` / `t` | Fold all / clear done / tidy. `q` stops a run in order. |
 
 Steps found in Bash output are only ever drafted, never sent straight away (their group shows ✎ instead of ▶), since that output can come from anywhere.
 

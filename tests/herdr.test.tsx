@@ -157,3 +157,17 @@ test('a step handed to another agent goes to it as one line, and shows as runnin
   for (let i = 0; i < 50 && !files['/home/t/.claude/upnext/herdr/w1-p1.json']!.includes('codex'); i++) await tick()
   expect(files['/home/t/.claude/upnext/herdr/w1-p1.json']).toContain('"handedTo":"codex w2:p3"')
 })
+
+test('marked steps handed to an agent go as one numbered prompt', async ($, on) => {
+  const actions: string[] = []
+  const { runs, files } = engine(on, HERDR, actions)
+  await $.session.start({ cwd: '/h7', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
+  const state = JSON.parse(files['/home/t/.claude/upnext/herdr/w1-p1.json']!) as { roots: { steps: { id: string }[] }[] }
+  const [a, b] = state.roots[0]!.steps
+  actions.push(`{"seq":1,"verb":"handoff","id":"${a!.id}","ids":["${a!.id}","${b!.id}"],"pane":"w2:p3","label":"codex w2:p3"}\n`)
+  await $.turn.complete({ ...TURN, answer: 'ok', turnId: 't2' })
+  for (let i = 0; i < 50 && !runs.some(r => r[2] === 'prompt'); i++) await tick()
+  const text = runs.find(r => r[1] === 'agent' && r[2] === 'prompt')![4]!
+  expect(text).toContain('in order: (1) Rotate the signing key (2) Audit the token store')
+})
