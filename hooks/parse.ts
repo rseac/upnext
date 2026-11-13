@@ -112,6 +112,55 @@ const prune = (steps: ParsedStep[]): ParsedStep[] =>
     .map(s => ({ ...s, children: prune(s.children) }))
     .filter(s => s.text.length > 0 && (s.children.length > 0 || !/[:]$/.test(s.text)))
 
+// Words a step starts with when it is something to do.
+const ACTION =
+  /^(?:please\s+)?(?:add|run|re-?run|write|create|update|fix|make|set(?:\s+up)?|open|start|try|look|check|commit|push|refactor|remove|delete|drop|build|deploy|move|rename|install|test|wire|draft|turn|go|show|change|split|merge|keep|use|switch|publish|share|review|explain|dig|investigate|clean|port|convert|extend|implement|verify|confirm|document|ask|decide|pick|choose|enable|disable|configure|restart|retry|measure|profile|benchmark|compare|replace|rewrite|simplify|tighten|link|note|record|log|bump|release|tag|cut|upgrade|downgrade|pin|mock|stub|cover|handle|support|validate|audit|rotate|revert|reset|widen|narrow|close|send|watch|see|read|follow|schedule|plan|prototype|sketch|design|tune|adjust|increase|decrease|reduce|raise|lower|limit|cap|guard|protect|secure|wrap|catch|ship|land|approve|assign|triage|label|file|report|invite|archive|tidy|restore|enable|resolve|reproduce|debug|trace|monitor|fetch|pull|rebase|squash|sign|lint|format|type-?check|generate|regenerate|seed|migrate|backfill|export|import|load|save|store|cache|split|combine|batch|parallelize|deduplicate|sort|filter|expose|hide|inline|extract|rework|polish|finish|complete|continue|resume|stop|pause|skip|ignore|allow|deny|block|unblock|grant|revoke|ping|email|message|tell|let|get|give|put|take|bring|walk|step|land)\b/i
+
+/** Whether an item reads as something to do: an action word, a command, or a slash command. */
+function isAction(text: string): boolean {
+  const t = plain(text).replace(/^[`'"]/, '')
+  return ACTION.test(t) || /^\//.test(t) || /^`[^`]+`$/.test(plain(text))
+}
+
+// Labels that introduce commentary on an option, not an option of its own:
+// "Why it would help: …", "What you lose: …", "Size: …", "Trade-off: …".
+const COMMENTARY =
+  /^(?:why|what|how|when|where|who|which|size|cost|effort|trade-?offs?|downsides?|upsides?|pros?|cons?|notes?|caveats?|risks?|impact|effect|results?|examples?|limits?|limitations?|status|tested|checks?|cause|reasons?|because|context|background|summary|tl;?dr|currently|so far|in short|the (?:catch|fix|problem|cause|idea|point|upshot)|benefits?|drawbacks?|gotchas?)\b/i
+
+/** A sentence about how things are ("The mod writes…", "It uses…"), not something to do. */
+function isStatement(text: string): boolean {
+  const t = plain(text)
+  return !isAction(t) && /^(?:the|this|that|these|those|it|its|it's|a|an|each|both|every|you|your|we|there|here|they|nothing|everything|one|all)\b/i.test(t)
+}
+
+/**
+ * Drops items that explain rather than act: "Why it helps: …" labels whose
+ * label is no action, and "How it works:" groups whose items are statements.
+ */
+function dropExplanations(steps: ParsedStep[]): ParsedStep[] {
+  return steps.flatMap(s => {
+    const t = plain(s.text)
+    const label = /^([^:`]{1,48}):\s+\S/.exec(t)
+    if (label && COMMENTARY.test(label[1]!.trim())) return []
+    if (/:$/.test(t) && !isAction(t)) {
+      const kids = dropExplanations(s.children)
+      return kids.length > 0 && !kids.every(k => isStatement(k.text)) ? [{ ...s, children: kids }] : []
+    }
+    return [{ ...s, children: dropExplanations(s.children) }]
+  })
+}
+
+/** At most this many top-level steps from one section. */
+const MAX_SECTION_STEPS = 10
+
+/** A section whose items are all statements is an explanation, not a to-do list. */
+function keepSteps(steps: ParsedStep[]): ParsedStep[] {
+  const kept = dropExplanations(steps)
+  const all = kept.flatMap(s => [s, ...s.children])
+  if (all.length >= 2 && all.every(s => isStatement(s.text))) return []
+  return kept.slice(0, MAX_SECTION_STEPS)
+}
+
 /**
  * Finds sections that introduce next steps ("## Next steps", "**You could
  * also:**", "Suggested follow-ups:") and returns their lists as trees. Nested
@@ -129,12 +178,16 @@ export function parseSections(
 
   const close = () => {
     if (section) {
-      const steps = prune(section.steps)
+      const steps = prune(kind === 'reply' ? keepSteps(section.steps) : section.steps)
       if (steps.length > 0) roots.push({ kind, title: tidy(section.title), steps })
     }
     section = undefined
   }
-  const isCue = (t: string) => CUE.test(t) || (opts.loose === true && TOOL_CUE.test(t))
+  // A cue in brackets ("Option A (my recommendation)") qualifies a heading; it is not the heading.
+  const isCue = (t: string) => {
+    const bare = t.replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')
+    return CUE.test(bare) || (opts.loose === true && TOOL_CUE.test(bare))
+  }
 
   for (const raw of md.split(/\r?\n/)) {
     if (FENCE.test(raw)) {

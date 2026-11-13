@@ -86,3 +86,52 @@ test('slash-command steps are recognised', async () => {
   expect(commandOf('Run `/simplify`')).toBe('/simplify')
   expect(commandOf('Run the tests')).toBeUndefined()
 })
+
+test('explanation under a heading that only mentions a recommendation is not a step', async () => {
+  const reply = `Three ways to go:
+
+**A. A herdr pane next to Claude (my recommendation)**
+
+- **How it fits together:**
+  - The mod writes the step tree to a file after each turn.
+  - A small viewer script runs in its own herdr pane.
+- **Why it would help:** herdr draws its own panes, so the symbol widths are out of the picture.
+- **What you lose:** clicking and hover cards.
+
+## Next steps
+
+- Restart the viewer and compare it with the image
+- **Why it matters:** the old script is still running
+- Open the pane inside Claude with \`/upnext\``
+  const roots = parseReply(reply)
+  expect(roots.map(r => r.title)).toEqual(['Next steps'])
+  expect(roots[0]!.steps.map(s => s.text)).toEqual(['Restart the viewer and compare it with the image', 'Open the pane inside Claude with `/upnext`'])
+})
+
+test('a "Label:" group of statements is explanation; one with actions stays', async () => {
+  const reply = `## Next steps
+
+- **How it works:**
+  - The viewer reads a file.
+  - It never types into Claude's pane.
+- **Docs:**
+  - Document the new flag
+  - Add a usage example`
+  const steps = parseReply(reply)[0]!.steps
+  expect(steps.map(s => s.text)).toEqual(['**Docs:**'])
+  expect(steps[0]!.children.map(s => s.text)).toEqual(['Document the new flag', 'Add a usage example'])
+})
+
+test('one section adds at most ten steps', async () => {
+  const items = Array.from({ length: 14 }, (_, i) => `- Add test case ${i + 1}`).join('\n')
+  expect(parseReply(`## Next steps\n${items}`)[0]!.steps.length).toBe(10)
+})
+
+test('named ideas ("**Archive:** park a stream…") stay; commentary labels go', async () => {
+  const reply = `**Optional ideas**
+
+- **Stream colours:** a colour per stream, also used in the 1/2/3 row.
+- **Archive:** park a stream without deleting it.
+- **Trade-off:** more colours to learn.`
+  expect(parseReply(reply)[0]!.steps.map(s => s.text.replace(/:\*\*.*/, ''))).toEqual(['**Stream colours', '**Archive'])
+})

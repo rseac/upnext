@@ -183,3 +183,7 @@ Step text comes from replies and tool output, which can quote files and web page
 | `paneStyle` | `auto` | `auto`: inside herdr, draw the tree in a herdr pane; elsewhere, the pane inside Claude. `claude`: always the pane inside Claude (`/upnext herdr` still works). |
 | `herdrLabel` | `true` | Inside herdr, shows the open count as the title of Claude's pane. |
 | `herdrGlyphs` | `symbols` | `ascii` draws the herdr pane with plain characters. |
+
+## License
+
+MIT. See [LICENSE](LICENSE).
