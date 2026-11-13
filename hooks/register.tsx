@@ -58,7 +58,8 @@ const KIND: Record<RootKind, { glyph: string; color: string }> = {
   reply: { glyph: '✦', color: 'claude' },
   offer: { glyph: '◇', color: 'suggestion' },
   tool: { glyph: '❯', color: 'bashBorder' },
-  todo: { glyph: '☰', color: 'planMode' },
+  // Not ☰: herdr and some other terminals draw it two cells wide.
+  todo: { glyph: '☐', color: 'planMode' },
   likely: { glyph: '➜', color: 'remember' },
   mine: { glyph: '✚', color: 'ide' },
   stream: { glyph: '⬢', color: 'claude' },
@@ -1010,6 +1011,7 @@ const herdr = {
   dir: '',
   cwd: '',
   label: true,
+  ascii: false,
   lastLabel: '',
   lastState: '',
   isPolling: false,
@@ -1084,7 +1086,7 @@ async function openViewer($: EngineInterface): Promise<string> {
   if (id === undefined) return 'Could not open a herdr pane (is herdr running?).'
   await update($, viewerA, () => id)
   const script = `${$.plugin.root}/bin/upnext-herdr.py`
-  await herdrRun($, ['pane', 'run', id, `exec python3 ${shellQuote(script)} ${shellQuote(statePath())} ${shellQuote(actionsPath())}`])
+  await herdrRun($, ['pane', 'run', id, `exec python3 ${shellQuote(script)}${herdr.ascii ? ' --ascii' : ''} ${shellQuote(statePath())} ${shellQuote(actionsPath())}`])
   return 'Opened Up next in a herdr pane to the right.'
 }
 
@@ -1187,6 +1189,7 @@ export const register: Register = (on, options) => {
   const keepAcrossSessions = options.keepAcrossSessions !== false
   const useHerdr = options.paneStyle !== 'claude'
   herdr.label = options.herdrLabel !== false
+  herdr.ascii = options.herdrGlyphs === 'ascii'
 
   on('session.start', async ($, e, next) => {
     cfg.cwd = keepAcrossSessions ? e.cwd : ''

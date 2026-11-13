@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Up next, in a herdr pane: the step tree the upnext mod writes, drawn with
-plain characters, driven by keys.
+"""Up next, in a herdr pane: the step tree the upnext mod writes, with mouse
+and keys.
 
-    upnext-herdr.py STATE_FILE ACTIONS_FILE
+    upnext-herdr.py [--ascii] STATE_FILE ACTIONS_FILE
 
 The mod writes STATE_FILE after every change. This viewer only reads it, and
-asks the mod to act by appending to ACTIONS_FILE, which the mod reads twice
-a second. It never types into Claude's pane itself.
+asks the mod to act by appending JSON lines to ACTIONS_FILE, which the mod
+reads twice a second. It never types into Claude's pane itself.
+
+Every symbol used is one that herdr's terminal counts as one cell wide;
+--ascii swaps them for plain characters in case a font draws one badly.
 """
 
 import json
@@ -21,7 +24,7 @@ import time
 import tty
 import unicodedata
 
-HELP = "enter draft  s send  x drop  a archive  space fold  j/k move  q quit"
+ESC = "\x1b["
 
 # The mod's theme colour names, as 256-colour codes.
 COLORS = {
@@ -38,45 +41,75 @@ COLORS = {
     "bashBorder": 204,
     "error": 167,
 }
-STATUS = {"open": "o", "queued": ".", "running": "~", "done": "+", "failed": "x"}
-STATUS_COLOR = {"open": None, "queued": 105, "running": 179, "done": 71, "failed": 167}
+STATUS_COLOR = {"open": 245, "queued": 105, "running": 179, "done": 71, "failed": 167}
 
-ESC = "\x1b["
+FANCY = {
+    "title": "✦",
+    "stream": "⬢",
+    "group": "◆",
+    "open": "○",
+    "queued": "◌",
+    "running": "◐",
+    "done": "✓",
+    "failed": "✗",
+    "unfolded": "▾",
+    "folded": "▸",
+    "mid": "├─ ",
+    "last": "└─ ",
+    "pipe": "│  ",
+    "space": "   ",
+    "send": "▶",
+    "drop": "✕",
+    "archive": "⊟",
+    "rule": "─",
+    "more": "…",
+}
+ASCII = {
+    "title": "*",
+    "stream": "#",
+    "group": "*",
+    "open": "o",
+    "queued": ".",
+    "running": "~",
+    "done": "+",
+    "failed": "x",
+    "unfolded": "-",
+    "folded": "+",
+    "mid": "|- ",
+    "last": "`- ",
+    "pipe": "|  ",
+    "space": "   ",
+    "send": ">",
+    "drop": "x",
+    "archive": "_",
+    "rule": "-",
+    "more": "...",
+}
 
-
-def fg(n, text):
-    return text if n is None else f"{ESC}38;5;{n}m{text}{ESC}39m"
-
-
-def dim(text):
-    return f"{ESC}2m{text}{ESC}22m"
-
-
-def bold(text):
-    return f"{ESC}1m{text}{ESC}22m"
+HELP = "click draft · ▶ send · ✕ drop · ⊟ archive · j/k enter s x a · q quit"
+HELP_ASCII = "click draft  > send  x drop  _ archive  j/k enter s x a  q quit"
 
 
 def cells(text):
-    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 0 if unicodedata.combining(c) else 1 for c in text)
+    return sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
 
 
-def clip(text, width):
-    """Cut to `width` cells, with ... when cut."""
+def clip(text, width, more="…"):
     if cells(text) <= width:
         return text
     out, used = "", 0
     for c in text:
         w = cells(c)
-        if used + w > width - 3:
+        if used + w > width - cells(more):
             break
         out += c
         used += w
-    return out + "..."
+    return out + more
 
 
-def wrap(text, width, max_lines=3):
-    words, lines, line = text.split(), [], ""
-    for w in words:
+def wrap(text, width, max_lines=3, more="…"):
+    lines, line = [], ""
+    for w in text.split():
         if line and cells(line) + 1 + cells(w) > width:
             lines.append(line)
             line = w
@@ -84,27 +117,75 @@ def wrap(text, width, max_lines=3):
             line = f"{line} {w}" if line else w
     if line:
         lines.append(line)
-    lines = [clip(l, width) for l in lines] or [""]
+    lines = [clip(l, width, more) for l in lines] or [""]
     if len(lines) > max_lines:
         lines = lines[:max_lines]
-        lines[-1] = clip(lines[-1] + " ...", width) if cells(lines[-1]) + 4 <= width else clip(lines[-1], width - 1) + "..."
+        lines[-1] = clip(lines[-1] + " " + more, width, more)
     return lines
 
 
 def safe(text):
     """Printable text only: the mod cleans it already; this is the second lock."""
-    return "".join(c for c in str(text) if c.isprintable() and c != "\x1b")
+    return "".join(c for c in str(text) if c.isprintable())
+
+
+class Line:
+    """One screen line: its styled text, what it belongs to, and its click zones."""
+
+    def __init__(self, row=None):
+        self.parts = []  # (text, style dict)
+        self.row = row  # index into Viewer.rows, or None
+        self.zones = []  # (x0, x1, action)
+        self.width = 0
+
+    def add(self, text, zone=None, **style):
+        if zone is not None:
+            self.zones.append((self.width, self.width + cells(text), zone))
+        self.parts.append((text, style))
+        self.width += cells(text)
+        return self
+
+    def pad_to(self, width):
+        if self.width < width:
+            self.add(" " * (width - self.width))
+        return self
+
+    def render(self, highlight=None):
+        out = []
+        base = ""
+        if highlight == "cursor":
+            base = f"{ESC}48;5;238m"
+        elif highlight == "hover":
+            base = f"{ESC}48;5;236m"
+        for text, st in self.parts:
+            codes = []
+            if st.get("fg") is not None:
+                codes.append(f"38;5;{st['fg']}")
+            if st.get("bold"):
+                codes.append("1")
+            if st.get("dim"):
+                codes.append("2")
+            if st.get("strike"):
+                codes.append("9")
+            out.append(base + (f"{ESC}{';'.join(codes)}m" if codes else "") + text + f"{ESC}0m")
+        return "".join(out) + base + f"{ESC}K{ESC}0m"
 
 
 class Viewer:
-    def __init__(self, state_path, actions_path):
+    def __init__(self, state_path, actions_path, ascii_only):
+        self.g = ASCII if ascii_only else FANCY
+        self.help = HELP_ASCII if ascii_only else HELP
         self.state_path = state_path
         self.actions_path = actions_path
         self.state = {}
         self.mtime = 0.0
         self.cursor = 0
+        self.top = 0
+        self.follow = True  # keep the cursor in view (off while the wheel scrolls)
+        self.hover_y = None
         self.folded = set()
-        self.rows = []  # (kind, root, step) per selectable row
+        self.rows = []  # ("root", root, None) or ("step", root, step)
+        self.screen = {}  # screen y (1-based) -> Line
         self.note = ""
         self.note_until = 0.0
         self.seq = int(time.time() * 1000)
@@ -126,101 +207,197 @@ class Viewer:
         except (OSError, ValueError):
             return False
 
-    def act(self, verb, target):
-        """Asks the mod to act: one JSON line, appended."""
+    def act(self, verb, target, note):
         self.seq += 1
-        line = json.dumps({"seq": self.seq, "verb": verb, "id": target})
         try:
             with open(self.actions_path, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+                f.write(json.dumps({"seq": self.seq, "verb": verb, "id": target}) + "\n")
+            self.say(note)
         except OSError as e:
             self.say(f"could not reach the mod: {e}")
 
     def say(self, text):
         self.note = text
-        self.note_until = time.time() + 3
+        self.note_until = time.time() + 2.5
 
-    # -- drawing -------------------------------------------------------------
+    # -- layout --------------------------------------------------------------
 
-    def draw(self):
-        cols, rows = shutil.get_terminal_size((40, 24))
-        # The last column is left free: some terminals wrap or cut it.
-        cols = max(20, cols - 1)
-        out = []
+    def build(self, cols):
+        """All body lines, top to bottom."""
+        g = self.g
+        lines = []
         self.rows = []
-        lines_at = []  # the output line of each selectable row
         roots = self.state.get("roots", [])
-        open_n = sum(1 for r in roots for s in r.get("steps", []) if s.get("status") != "done")
-        title = bold(fg(COLORS["claude"], "* Up next"))
-        count = f"{open_n} open"
-        out.append(title + " " * max(1, cols - 9 - len(count)) + dim(count))
-        if self.state.get("loading"):
-            out.append(dim("  finding steps..."))
-        out.append(dim("-" * cols))
-        if not roots:
-            out.append("")
-            out.append("  Nothing queued up.")
-            out.append(dim("  Steps land here when a reply"))
-            out.append(dim("  suggests or offers more."))
-        for r in roots:
+        for ri, r in enumerate(roots):
+            if ri > 0:
+                lines.append(Line())
             rid = r.get("id")
-            color = COLORS.get(r.get("color"), None)
+            color = COLORS.get(r.get("color"))
             steps = r.get("steps", [])
             left = sum(1 for s in steps if s.get("status") != "done")
             folded = rid in self.folded
             self.rows.append(("root", r, None))
-            lines_at.append(len(out))
-            here = len(self.rows) - 1 == self.cursor
-            mark = ">" if here else " "
-            head = f"{mark}{'+' if folded else '-'} "
-            name = clip(safe(r.get("title", "")), cols - len(head) - 6)
-            tail = "done" if left == 0 else str(left)
-            line = head + fg(color, "# ") + bold(name)
-            pad = cols - len(head) - 2 - cells(name) - len(tail)
-            out.append(("" if not here else f"{ESC}7m") + line + " " * max(1, pad) + dim(tail) + (f"{ESC}27m" if here else ""))
+            row = len(self.rows) - 1
+            line = Line(row)
+            buttons = [(g["send"], ("send-all", rid)), (g["archive"], ("archive", rid)), (g["drop"], ("dismiss", rid))]
+            if r.get("kind") != "stream":
+                buttons = [b for b in buttons if b[1][0] != "archive"]
+            right = 2 * len(buttons) + 1
+            count = f"{left}" if left else g["done"]
+            name_w = max(4, cols - 5 - right - cells(count) - 2)
+            name = clip(safe(r.get("title", "")), name_w, g["more"])
+            fold = ("toggle", rid)
+            line.add(" " + (g["folded"] if folded else g["unfolded"]) + " ", fold, dim=True)
+            line.add(g["stream"] if r.get("kind") == "stream" else g["group"], fold, fg=color)
+            line.add(" ", fold)
+            line.add(name, fold, bold=True)
+            line.add("  ")
+            line.add(count, fg=STATUS_COLOR["done"] if not left else color, dim=bool(left))
+            line.pad_to(cols - right)
+            for glyph, zone in buttons:
+                line.add(" ")
+                line.add(glyph, zone, dim=True)
+            lines.append(line)
             if folded:
                 continue
-            for s in steps:
-                depth = int(s.get("depth", 0))
+            # Tree guides: whether each step is the last of its siblings.
+            depths = [int(s.get("depth", 0)) for s in steps]
+            last = []
+            for i, d in enumerate(depths):
+                j = i + 1
+                while j < len(depths) and depths[j] > d:
+                    j += 1
+                last.append(j >= len(depths) or depths[j] < d)
+            open_levels = []
+            for i, s in enumerate(steps):
+                d = depths[i]
+                open_levels = open_levels[:d]
+                lead = " " + "".join(g["space"] if done else g["pipe"] for done in open_levels)
+                branch = g["last"] if last[i] else g["mid"]
+                cont = lead + (g["space"] if last[i] else g["pipe"])
+                open_levels.append(last[i])
                 self.rows.append(("step", r, s))
-                lines_at.append(len(out))
-                here = len(self.rows) - 1 == self.cursor
+                row = len(self.rows) - 1
                 st = s.get("status", "open")
-                lead = "  " + "  " * depth
-                glyph = fg(STATUS_COLOR.get(st), STATUS.get(st, "o"))
-                width = cols - len(lead) - 3
-                lines = wrap(safe(s.get("text", "")), width)
-                for i, l in enumerate(lines):
-                    text = dim(l) if st == "done" else l
-                    first = f"{lead}{glyph} " if i == 0 else f"{lead}  "
-                    row = ((">" if here and i == 0 else " ") + first[1:]) + text
-                    out.append(f"{ESC}7m{row}{ESC}27m" if here else row)
+                sid = s.get("id")
+                text_w = max(8, cols - cells(lead + branch) - 2 - 5)
+                texts = wrap(safe(s.get("text", "")), text_w, 3, g["more"])
+                for n, t in enumerate(texts):
+                    line = Line(row)
+                    draft = ("draft", sid)
+                    if n == 0:
+                        line.add(lead + branch, dim=True)
+                        line.add(g.get(st, g["open"]), draft, fg=STATUS_COLOR.get(st))
+                        line.add(" ", draft)
+                    else:
+                        line.add(cont + "  ", dim=True)
+                    line.add(t, draft, dim=st == "done", strike=st == "done")
+                    if n == 0:
+                        line.pad_to(cols - 4)
+                        line.add(" ")
+                        line.add(g["send"], ("send", sid), dim=True)
+                        line.add(" ")
+                        line.add(g["drop"], ("dismiss", sid), dim=True)
+                    lines.append(line)
+        return lines
+
+    def draw(self):
+        cols, rows = shutil.get_terminal_size((40, 24))
+        # The last column is left free: some terminals wrap or cut it.
+        cols = max(24, cols - 1)
+        g = self.g
+        roots = self.state.get("roots", [])
+        open_n = sum(1 for r in roots for s in r.get("steps", []) if s.get("status") != "done")
+
+        head = Line()
+        head.add(f" {g['title']} Up next", fg=COLORS["claude"], bold=True)
+        count = "finding steps" + g["more"] if self.state.get("loading") else f"{open_n} open"
+        head.pad_to(cols - cells(count))
+        head.add(count, dim=True)
+        rule = Line().add(g["rule"] * cols, dim=True)
+
+        body = self.build(cols)
+        if not body:
+            body = [Line(), Line().add("   Nothing queued up.", bold=True), Line().add("   Steps land here when a reply", dim=True), Line().add("   suggests or offers more.", dim=True)]
         self.cursor = min(self.cursor, max(0, len(self.rows) - 1))
-        foot = [self.note] if time.time() < self.note_until else wrap(HELP, cols, 3)
-        room = max(1, rows - 1 - len(foot))
-        head = 3 if self.state.get("loading") else 2
-        if len(out) > room and lines_at:
-            # Keep the selected row in view, under the fixed header.
-            at = lines_at[min(self.cursor, len(lines_at) - 1)] - head
-            body_room = room - head
-            start = max(0, min(len(out) - head - body_room, at - body_room // 2))
-            out = out[:head] + out[head + start : head + start + body_room]
-        body = out[:room]
-        body += [""] * (room - len(body))
-        body.append(dim("-" * cols))
-        body += [dim(clip(f, cols)) for f in foot]
-        sys.stdout.write(f"{ESC}H" + "\r\n".join(f"{l}{ESC}K" for l in body) + f"{ESC}J")
+
+        foot_text = [self.note] if time.time() < self.note_until else wrap(self.help, cols - 1, 2, g["more"])
+        foot = [Line().add(g["rule"] * cols, dim=True)] + [Line().add(" " + t, dim=True) for t in foot_text]
+        room = max(1, rows - 2 - len(foot))
+
+        # Scroll: keep the cursor's first line in view unless the wheel moved.
+        if self.follow:
+            at = next((i for i, l in enumerate(body) if l.row == self.cursor), 0)
+            if at < self.top:
+                self.top = max(0, at - 1)
+            elif at >= self.top + room:
+                self.top = at - room + 2
+        self.top = max(0, min(self.top, max(0, len(body) - room)))
+        shown = body[self.top : self.top + room]
+        shown += [Line() for _ in range(room - len(shown))]
+
+        hover_row = self.screen_row(self.hover_y) if self.hover_y is not None else None
+        self.screen = {}
+        out = [head.render(), rule.render()]
+        for i, line in enumerate(shown):
+            self.screen[3 + i] = line
+            mark = None
+            if line.row is not None and line.row == self.cursor:
+                mark = "cursor"
+            elif line.row is not None and line.row == hover_row:
+                mark = "hover"
+            out.append(line.render(mark))
+        out += [l.render() for l in foot]
+        sys.stdout.write(f"{ESC}H" + "\r\n".join(out) + f"{ESC}J")
         sys.stdout.flush()
 
-    # -- keys ----------------------------------------------------------------
+    def screen_row(self, y):
+        line = self.screen.get(y)
+        return line.row if line else None
 
-    def selected(self):
-        return self.rows[self.cursor] if 0 <= self.cursor < len(self.rows) else None
+    # -- input ---------------------------------------------------------------
+
+    def run_zone(self, zone):
+        verb, target = zone
+        if verb == "toggle":
+            self.folded.symmetric_difference_update({target})
+        elif verb == "draft":
+            self.act("draft", target, "drafted in Claude's prompt box")
+            self.focus_claude()
+        elif verb == "send":
+            self.act("send", target, "sent to Claude")
+        elif verb == "send-all":
+            self.act("send-all", target, "sent the stream's open steps")
+        elif verb == "dismiss":
+            self.act("dismiss", target, "dismissed")
+        elif verb == "archive":
+            self.act("archive", target, "archived · /upnext shows the archive")
+
+    def mouse(self, b, x, y, pressed):
+        if b in (64, 65):  # wheel
+            self.follow = False
+            self.top += -3 if b == 64 else 3
+            return
+        if b & 32:  # motion
+            self.hover_y = y
+            return
+        if not pressed or (b & 3) != 0:  # left button press only
+            return
+        line = self.screen.get(y)
+        if line is None:
+            return
+        if line.row is not None:
+            self.cursor = line.row
+        for x0, x1, zone in line.zones:
+            if x0 <= x - 1 < x1:
+                self.run_zone(zone)
+                return
 
     def key(self, k):
-        row = self.selected()
         if k in ("q", "\x03"):
             return False
+        sel = self.rows[self.cursor] if 0 <= self.cursor < len(self.rows) else None
+        self.follow = True
         if k in ("j", f"{ESC}B"):
             self.cursor = min(self.cursor + 1, max(0, len(self.rows) - 1))
         elif k in ("k", f"{ESC}A"):
@@ -229,32 +406,24 @@ class Viewer:
             self.cursor = 0
         elif k == "G":
             self.cursor = max(0, len(self.rows) - 1)
-        elif row is None:
+        elif sel is None:
             pass
-        elif k == " " or (k in ("\r", "\n") and row[0] == "root"):
-            rid = row[1].get("id")
-            self.folded.symmetric_difference_update({rid})
+        elif k == " " or (k in ("\r", "\n") and sel[0] == "root"):
+            self.run_zone(("toggle", sel[1].get("id")))
         elif k in ("\r", "\n", "d"):
-            self.act("draft", row[2]["id"])
-            self.say("drafted in Claude's prompt box")
-            self.focus_claude()
+            self.run_zone(("draft", sel[2]["id"]))
         elif k == "s":
-            target = row[2]["id"] if row[0] == "step" else row[1]["id"]
-            self.act("send" if row[0] == "step" else "send-all", target)
-            self.say("sent to Claude")
+            self.run_zone(("send", sel[2]["id"]) if sel[0] == "step" else ("send-all", sel[1]["id"]))
         elif k == "x":
-            target = row[2]["id"] if row[0] == "step" else row[1]["id"]
-            self.act("dismiss", target)
-        elif k == "a" and row[1].get("kind") == "stream":
-            self.act("archive", row[1]["id"])
-            self.say("archived; /upnext shows the archive")
+            self.run_zone(("dismiss", (sel[2] or sel[1])["id"]))
+        elif k == "a" and sel[1].get("kind") == "stream":
+            self.run_zone(("archive", sel[1]["id"]))
         return True
 
     def focus_claude(self):
         """Back to Claude's pane, so the draft can be edited and sent."""
         me = os.environ.get("HERDR_PANE_ID")
-        claude = self.state.get("claudePane")
-        if not me or not claude:
+        if not me or not self.state.get("claudePane"):
             return
         herdr = os.environ.get("HERDR_BIN_PATH") or "herdr"
         try:
@@ -263,54 +432,77 @@ class Viewer:
             pass
 
 
-def read_keys(fd):
-    """Every key waiting, arrows as one key each."""
-    data = os.read(fd, 256).decode("utf-8", "ignore")
-    keys = []
+def events(fd):
+    """Keys and mouse events waiting on the terminal."""
+    data = os.read(fd, 1024).decode("utf-8", "ignore")
+    out = []
     while data:
-        if data.startswith(ESC) and len(data) >= 3:
-            keys.append(data[:3])
+        if data.startswith(ESC + "<"):
+            ends = [i for i in (data.find("M"), data.find("m")) if i > 0]
+            end = min(ends) if ends else len(data)
+            try:
+                b, x, y = (int(n) for n in data[3:end].split(";"))
+                out.append(("mouse", b, x, y, end < len(data) and data[end] == "M"))
+            except ValueError:
+                pass
+            data = data[end + 1 :]
+        elif data.startswith(ESC) and len(data) >= 3:
+            out.append(("key", data[:3]))
             data = data[3:]
         else:
-            keys.append(data[0])
+            out.append(("key", data[0]))
             data = data[1:]
-    return keys
+    return out
 
 
 def main():
-    if len(sys.argv) != 3:
+    args = sys.argv[1:]
+    ascii_only = "--ascii" in args
+    args = [a for a in args if a != "--ascii"]
+    if len(args) != 2:
         print(__doc__)
         return 2
-    v = Viewer(sys.argv[1], sys.argv[2])
+    v = Viewer(args[0], args[1], ascii_only)
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
     resized = [True]
     signal.signal(signal.SIGWINCH, lambda *_: resized.__setitem__(0, True))
+    # Alternate screen, no cursor, mouse clicks + motion in SGR form.
+    on = f"{ESC}?1049h{ESC}?25l{ESC}?1000h{ESC}?1003h{ESC}?1006h"
+    off = f"{ESC}?1006l{ESC}?1003l{ESC}?1000l{ESC}?25h{ESC}?1049l"
     try:
         tty.setcbreak(fd)
-        sys.stdout.write(f"{ESC}?1049h{ESC}?25l")
+        sys.stdout.write(on)
         v.load()
         v.draw()
+        last_size = shutil.get_terminal_size((40, 24))
         while True:
             ready, _, _ = select.select([fd], [], [], 0.4)
             changed = v.load()
             if ready:
-                if not all(v.key(k) for k in read_keys(fd)):
-                    break
+                for ev in events(fd):
+                    if ev[0] == "mouse":
+                        v.mouse(*ev[1:])
+                    elif not v.key(ev[1]):
+                        return 0
                 changed = True
             if v.note and time.time() >= v.note_until:
                 v.note = ""
                 changed = True
+            # herdr can settle a new pane's size after the first draw.
+            size = shutil.get_terminal_size((40, 24))
+            if size != last_size:
+                last_size = size
+                resized[0] = True
             if changed or resized[0]:
                 resized[0] = False
                 v.draw()
     except KeyboardInterrupt:
-        pass
+        return 0
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-        sys.stdout.write(f"{ESC}?25h{ESC}?1049l")
+        sys.stdout.write(off)
         sys.stdout.flush()
-    return 0
 
 
 if __name__ == "__main__":

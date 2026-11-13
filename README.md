@@ -14,7 +14,7 @@ An **Up next** pane beside the transcript that collects the next steps Claude su
  ├─ ○ Document the new flags             ▶ ✎ ✕
  └─ ○ Fix broken links in README         ▶ ✎ ✕
 
-▸ ☰ Todo list                                  1 ✕
+▸ ☐ Todo list                                  1 ✕
 ```
 
 The top three open steps also sit in a row above the prompt box:
@@ -87,24 +87,26 @@ Each line of work gets its own **stream** (⬢), kept across turns:
 When Claude Code runs inside [herdr](https://herdr.dev), Up next draws its tree in a herdr pane of its own, to the right of Claude's, instead of inside Claude. It uses plain characters, so it lines up however the terminal counts symbol widths.
 
 ```
-┌─ claude ───────────────────┬─ upnext ─────────────────┐
-│ transcript…                │ * Up next         3 open │
-│                            │ - # Auth               2 │
-│                            │ > o Rotate the key       │
-│                            │   o Audit the store      │
-│ > _                        │ - # Docs               1 │
-└────────────────────────────┴──────────────────────────┘
+┌─ claude ───────────────────┬─ upnext ─────────────────────┐
+│ transcript…                │ ✦ Up next             3 open │
+│                            │ ▾ ⬢ Auth  2           ▶ ⊟ ✕  │
+│                            │ ├─ ○ Rotate the key     ▶ ✕  │
+│                            │ └─ ◐ Audit the store    ▶ ✕  │
+│ > _                        │ ▾ ⬢ Docs  1           ▶ ⊟ ✕  │
+└────────────────────────────┴──────────────────────────────┘
 ```
 
-| Key | What it does |
-| --- | --- |
-| `j` `k` or ↓ ↑ | Move |
-| Enter or `d` | Drafts the step in Claude's prompt box and moves you to Claude's pane |
-| `s` | Sends the step (on a stream: all its open steps) |
-| `x` | Dismisses the step or stream |
-| `a` | Archives the stream |
-| Space | Folds a stream |
-| `q` | Closes the viewer |
+| Mouse | Keys | What it does |
+| --- | --- | --- |
+| Click a step | Enter or `d` | Drafts it in Claude's prompt box and moves you to Claude's pane |
+| ▶ | `s` | Sends the step (on a stream: all its open steps) |
+| ✕ | `x` | Dismisses the step or stream |
+| ⊟ | `a` | Archives the stream |
+| Click a stream's name | Space | Folds or unfolds it |
+| Wheel | `j` `k` ↓ ↑ `g` `G` | Scrolls / moves |
+| | `q` | Closes the viewer |
+
+The row under the mouse lights up. Every symbol is one herdr draws one cell wide; set `herdrGlyphs` to `ascii` if your font draws any of them badly.
 
 - **When it opens:** when the first steps arrive. If you close it, it stays closed until `/upnext herdr`.
 - **The count:** Claude's herdr pane gets the title "3 next" while steps are open (`herdrLabel`).
@@ -170,3 +172,4 @@ Step text comes from replies and tool output, which can quote files and web page
 | `scanToolOutput` | `true` | Reads Bash output and todo/task lists too. |
 | `paneStyle` | `auto` | `auto`: inside herdr, draw the tree in a herdr pane; elsewhere, the pane inside Claude. `claude`: always the pane inside Claude (`/upnext herdr` still works). |
 | `herdrLabel` | `true` | Inside herdr, shows the open count as the title of Claude's pane. |
+| `herdrGlyphs` | `symbols` | `ascii` draws the herdr pane with plain characters. |
