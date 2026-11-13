@@ -7,12 +7,12 @@ const stores: Record<string, unknown>[] = []
 const tick = () => new Promise<void>(r => setTimeout(r, 10))
 
 const PANE = {
-  plugin: 'next-steps-pane',
+  plugin: 'upnext',
   component: 'Pane',
-  requestId: 'next-steps',
+  requestId: 'upnext',
   surface: 'terminal',
   props: {
-    title: 'Next steps',
+    title: 'Up next',
     isFocused: false,
     bodyColumns: 60,
     placement: 'dock',
@@ -46,7 +46,7 @@ function engine(on: On, fork: string[] = [], store?: Record<string, unknown>) {
   const written: Record<string, string> = {}
   const forks: string[] = []
   const toasts: string[] = []
-  on('command.register', () => ({ value: { command: 'next-steps' } }))
+  on('command.register', () => ({ value: { command: 'upnext' } }))
   on('command.list', () => ({ value: [{ name: 'real-skill', description: 'does things', source: 'user' as const }] }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', (_, e) => {
@@ -191,12 +191,12 @@ test('saved steps are restored, folded, when the pane is empty', async ($, on) =
   await ui.unmount()
 })
 
-test('/next-steps export writes a checklist', async ($, on) => {
+test('/upnext export writes a checklist', async ($, on) => {
   const { written, toasts } = engine(on)
   await $.session.start({ cwd: '/proj-i', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, reason: 'answer', answer: '## Next steps\n- Add tests\n- [x] Ship it', turnId: 't1' })
   const r = await $.command.run({
-    command: 'next-steps',
+    command: 'upnext',
     args: 'export plan.md',
     origin: { kind: 'composer' },
     presentation: { isFullscreen: true, columns: 120 },

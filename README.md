@@ -1,9 +1,9 @@
-# next-steps-pane
+# upnext
 
-A pane beside the transcript that collects the next steps Claude suggests and shows them as a tree you can act on.
+An **Up next** pane beside the transcript that collects the next steps Claude suggests and shows them as a tree you can act on.
 
 ```
-✦ Next steps                    3 open · 1 done
+✦ Up next                       3 open · 1 done
 ──────────────────────────────────────────────
 ▾ ✦ Next steps · turn 4                 2 ▶ ✕
  ├─ ▾ ○ Add unit tests for the parser     ▶ ✕
@@ -24,7 +24,7 @@ The top three open steps also sit in a row above the prompt box:
 At the prompt of a Claude Code terminal session:
 
 ```
-/plugin install next-steps-pane --marketplace rseac/claude-next-steps-pane
+/plugin install upnext --marketplace rseac/upnext
 ```
 
 Answer `y` to add the marketplace, then pick a scope (user scope is first; press Enter).
@@ -32,10 +32,10 @@ Answer `y` to add the marketplace, then pick a scope (user scope is first; press
 From a shell:
 
 ```
-claude plugin install next-steps-pane --marketplace rseac/claude-next-steps-pane
+claude plugin install upnext --marketplace rseac/upnext
 ```
 
-In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `rseac/claude-next-steps-pane`, then Add plugin.
+In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `rseac/upnext`, then Add plugin.
 
 This repository is private, so before installing:
 
@@ -83,10 +83,10 @@ Open steps are saved per project folder. The next session there brings them back
 
 | Command | What it does |
 | --- | --- |
-| `/next-steps` | Opens the pane. If you closed it, it stays closed until you run this again. |
-| `/next-steps clear` | Empties the pane and the saved copy. |
-| `/next-steps export [file]` | Writes every step as a Markdown checklist (default `NEXT_STEPS.md`). |
-| `/next-steps issues` | Drafts a prompt asking Claude to turn the open steps into GitHub issues, showing them to you first. Nothing is created until you send it and approve. |
+| `/upnext` | Opens the pane. If you closed it, it stays closed until you run this again. |
+| `/upnext clear` | Empties the pane and the saved copy. |
+| `/upnext export [file]` | Writes every step as a Markdown checklist (default `NEXT_STEPS.md`). |
+| `/upnext issues` | Drafts a prompt asking Claude to turn the open steps into GitHub issues, showing them to you first. Nothing is created until you send it and approve. |
 
 ### Safety
 

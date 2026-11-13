@@ -1,5 +1,12 @@
 {
-  "name": "claude-next-steps-pane",
-  "owner": { "name": "rseac" },
-  "plugins": [{ "name": "next-steps-pane", "source": "./" }]
+  "name": "upnext",
+  "owner": {
+    "name": "rseac"
+  },
+  "plugins": [
+    {
+      "name": "upnext",
+      "source": "./"
+    }
+  ]
 }

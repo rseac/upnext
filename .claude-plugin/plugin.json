@@ -1,11 +1,12 @@
 {
-  "name": "next-steps-pane",
-  "version": "0.3.0",
-  "description": "A side pane that gathers the next steps Claude suggests into a tree you can click to draft, send or dismiss.",
+  "name": "upnext",
+  "version": "0.4.0",
+  "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
   "author": {
     "name": "rseac"
   },
   "keywords": [
+    "upnext",
     "next-steps",
     "suggestions",
     "pane",

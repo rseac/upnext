@@ -5,11 +5,11 @@ import type { TestBody } from 'claude-code/testing'
 declare const setTimeout: (fn: () => void, ms: number) => unknown
 
 const PANE = {
-  plugin: 'next-steps-pane',
+  plugin: 'upnext',
   component: 'Pane',
-  requestId: 'next-steps',
+  requestId: 'upnext',
   props: {
-    title: 'Next steps',
+    title: 'Up next',
     isFocused: false,
     bodyColumns: 48,
     placement: 'dock',
@@ -33,7 +33,7 @@ function engine(on: On) {
   const sent: string[] = []
   const drafted: string[] = []
   const ghost: string[] = []
-  on('command.register', () => ({ value: { command: 'next-steps' } }))
+  on('command.register', () => ({ value: { command: 'upnext' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('turn.complete', () => ({ text: '' }))
@@ -83,7 +83,7 @@ test('the band offers the top steps with 1/2/3, and 0 hides it', async ($, on) =
   await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
 
   const band = {
-    plugin: 'next-steps-pane',
+    plugin: 'upnext',
     component: 'AbovePrompt',
     surface: 'terminal',
     props: { hasSurvey: false, isCollapsed: false, isWorking: false, bodyColumns: 100 },

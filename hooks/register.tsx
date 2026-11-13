@@ -16,21 +16,22 @@ import {
   type ParsedStep,
 } from './parse'
 
-const PANE = 'next-steps'
-const TITLE = 'Next steps'
+const PANE = 'upnext'
+const TITLE = 'Up next'
+const GROUP_TITLE = 'Next steps'
 const MAX_ROOTS = 24
 const BAND_ITEMS = 3
 const MAX_AGENTS = 5
 
 // Bump a tag when that value's fields change: older stored values are then
 // read as the initial value instead of being misread.
-const rootsA = atom({ plugin: 'next-steps-pane', key: 'roots' } as const, [], { shape: 'roots-1' })
-const pendingA = atom({ plugin: 'next-steps-pane', key: 'pending' } as const, [], { shape: 'pending-1' })
-const inflightA = atom({ plugin: 'next-steps-pane', key: 'inflight' } as const, [], { shape: 'inflight-1' })
-const turnA = atom({ plugin: 'next-steps-pane', key: 'turn' } as const, 0)
-const closedA = atom({ plugin: 'next-steps-pane', key: 'isClosedByPerson' } as const, false)
-const loadingA = atom({ plugin: 'next-steps-pane', key: 'loadingTurn' } as const, 0)
-const bandHiddenA = atom({ plugin: 'next-steps-pane', key: 'bandHiddenTurn' } as const, 0)
+const rootsA = atom({ plugin: 'upnext', key: 'roots' } as const, [], { shape: 'roots-1' })
+const pendingA = atom({ plugin: 'upnext', key: 'pending' } as const, [], { shape: 'pending-1' })
+const inflightA = atom({ plugin: 'upnext', key: 'inflight' } as const, [], { shape: 'inflight-1' })
+const turnA = atom({ plugin: 'upnext', key: 'turn' } as const, 0)
+const closedA = atom({ plugin: 'upnext', key: 'isClosedByPerson' } as const, false)
+const loadingA = atom({ plugin: 'upnext', key: 'loadingTurn' } as const, 0)
+const bandHiddenA = atom({ plugin: 'upnext', key: 'bandHiddenTurn' } as const, 0)
 
 // Options, set by register (it runs again on every reload), and the project.
 const cfg = {
@@ -289,7 +290,7 @@ function fromModel(text: string): ForkAnswer | undefined {
   const groups = (Array.isArray(data.groups) ? (data.groups as { title?: unknown; steps?: unknown }[]) : [])
     .map(g => ({
       kind: 'reply' as const,
-      title: (typeof g?.title === 'string' ? clean(g.title, 80) : '') || TITLE,
+      title: (typeof g?.title === 'string' ? clean(g.title, 80) : '') || GROUP_TITLE,
       steps: steps(g?.steps, 0),
     }))
     .filter(g => g.steps.length > 0)
@@ -307,7 +308,7 @@ async function modelPass($: EngineInterface, job: Job) {
     const r = await $.model.fork({ prompt: forkPrompt(job), effort: 'low' })
     if (r.isAnswered) answer = fromModel(r.text)
   } catch (error) {
-    $.ui.log(`next-steps-pane: model call failed: ${String(error)}`)
+    $.ui.log(`upnext: model call failed: ${String(error)}`)
   }
 
   // Outcomes are about particular steps, so they stand even if a newer turn ended.
@@ -426,11 +427,11 @@ async function send($: EngineInterface, stepIds: string[], prompt: string) {
     async r => {
       if (r.drop === undefined) return
       await forget($, prompt, stepIds)
-      $.ui.toast('next-steps-pane: the prompt was not sent')
+      $.ui.toast('upnext: the prompt was not sent')
     },
     async error => {
       await forget($, prompt, stepIds)
-      $.ui.toast(`next-steps-pane: could not send: ${String(error)}`)
+      $.ui.toast(`upnext: could not send: ${String(error)}`)
     },
   )
 }
@@ -440,9 +441,9 @@ async function draft($: EngineInterface, stepIds: string[], prompt: string) {
   if (stepIds.length > 0) await update($, inflightA, list => [...list, { stepIds, prompt }].slice(-20))
   try {
     const r = await $.prompt.fill({ text: prompt, mode: 'replace' })
-    if (!r.isFilled) $.ui.toast('next-steps-pane: could not fill the prompt box (close any dialog first)')
+    if (!r.isFilled) $.ui.toast('upnext: could not fill the prompt box (close any dialog first)')
   } catch (error) {
-    $.ui.toast(`next-steps-pane: could not fill the prompt box: ${String(error)}`)
+    $.ui.toast(`upnext: could not fill the prompt box: ${String(error)}`)
   }
 }
 
@@ -487,7 +488,7 @@ async function runInBackground($: EngineInterface, rootId: string) {
     try {
       const r = await $.agent.spawn({ prompt: promptForStep(step) + AGENT_NOTE, description: plain(step.text).slice(0, 60) })
       if (r.deny !== undefined || r.agentId === undefined) {
-        $.ui.toast(`next-steps-pane: could not start an agent${r.deny ? `: ${r.deny}` : ''}`)
+        $.ui.toast(`upnext: could not start an agent${r.deny ? `: ${r.deny}` : ''}`)
         continue
       }
       const agentId = r.agentId
@@ -496,7 +497,7 @@ async function runInBackground($: EngineInterface, rootId: string) {
         mapAll(roots, s => (s.id === step.id ? { ...s, status: 'running', agentId } : ids.includes(s.id) ? { ...s, status: 'running' } : s)),
       )
     } catch (error) {
-      $.ui.toast(`next-steps-pane: could not start an agent: ${String(error)}`)
+      $.ui.toast(`upnext: could not start an agent: ${String(error)}`)
     }
   }
 }
@@ -510,7 +511,7 @@ async function finishAgent($: EngineInterface, agentId: string, reason: string, 
   await changeRoots($, rs =>
     mapAll(rs, s => (s.id === step.id ? { ...s, status, agentId: undefined } : ids.includes(s.id) && s.status !== 'done' ? { ...s, status } : s)),
   )
-  $.ui.toast(`next-steps-pane: ${status === 'done' ? '✓' : status === 'failed' ? '✗' : '○'} ${plain(step.text).slice(0, 60)}`)
+  $.ui.toast(`upnext: ${status === 'done' ? '✓' : status === 'failed' ? '✗' : '○'} ${plain(step.text).slice(0, 60)}`)
 }
 
 const dismissStep = ($: EngineInterface, id: string) => changeRoots($, roots => mapAll(roots, s => (s.id === id ? undefined : s)))
@@ -595,7 +596,7 @@ async function draftIssues($: EngineInterface) {
     .map(r => `${r.title}:\n${r.list}`)
     .join('\n\n')
   if (list === '') {
-    $.ui.toast('next-steps-pane: there are no open steps')
+    $.ui.toast('upnext: there are no open steps')
     return
   }
   await draft(
@@ -621,8 +622,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     cfg.cwd = keepAcrossSessions ? e.cwd : ''
     await $.command.register({
-      name: 'next-steps',
-      description: 'Show the next-steps pane. Also: clear, export [file], issues',
+      name: 'upnext',
+      description: 'Show the Up next pane. Also: clear, export [file], issues',
       argumentHint: '[clear | export [file] | issues]',
     })
     if (keepAcrossSessions) await restore($)
@@ -631,12 +632,12 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'next-steps' }, async ($, e) => {
+  on('command.run', { command: 'upnext' }, async ($, e) => {
     const [verb = '', ...rest] = (e.args ?? '').trim().split(/\s+/)
     switch (verb.toLowerCase()) {
       case 'clear':
         await clearAll($)
-        return { text: 'Cleared the next-steps pane.' }
+        return { text: 'Cleared the Up next pane.' }
       case 'export':
         return { text: await exportSteps($, rest.join(' ') || 'NEXT_STEPS.md') }
       case 'issues':
@@ -646,7 +647,7 @@ export const register: Register = (on, options) => {
       default:
         await update($, closedA, () => false)
         await $.ui.open({ id: PANE, title: TITLE, focus: true })
-        return { text: 'Next-steps pane opened.' }
+        return { text: 'Up next pane opened.' }
     }
   })
 
@@ -842,7 +843,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between">
           <Text color="claude" bold>
-            ✦ Next steps
+            ✦ Up next
           </Text>
           {isLoading ? (
             <Text color="claude" dimColor>

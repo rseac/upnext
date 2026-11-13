@@ -36,7 +36,7 @@ export type Inflight = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'next-steps-pane': {
+    'upnext': {
       roots: Shaped<Root[]>
       pending: Shaped<Root[]>
       inflight: Shaped<Inflight[]>
