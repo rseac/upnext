@@ -154,6 +154,8 @@ Open steps are saved per project folder. The next session there brings them back
 
 **After `/clear`, or in a new session**, steps from before are folded and marked "earlier". The pane shows them exactly as before, but clicking one builds a prompt that stands on its own: the step itself instead of "Yes, please…", the stream it belongs to, and a note to check the code first, since some of it may be done. That wording is put together when you click and never stored. `/clear` also puts queued and running steps back to open and stops a run in order. Background agents (⇶) are left to finish.
 
+**When the context fills and Claude Code compacts it**, the conversation goes on as a summary. Up next adds its newest 15 open steps to the summarizer's instructions, so the summary keeps what they refer to (files, functions, decisions) and their prompts still make sense. Nothing in the pane changes. Steps past those 15 are marked "earlier" once the compaction is done, so they get the self-contained prompt.
+
 | Command | What it does |
 | --- | --- |
 | `/upnext` | Opens the pane. If you closed it, it stays closed until you run this again. |
