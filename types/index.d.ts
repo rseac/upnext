@@ -78,6 +78,8 @@ declare module 'claude-code' {
       /** The one stream the pane shows (`/upnext <name>`); null shows them all. */
       filter: string | null
       showArchived: boolean
+      /** The herdr pane the viewer runs in, once opened. */
+      herdrViewer: string | null
     }
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "upnext",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
   "author": {
     "name": "rseac"
@@ -77,6 +77,22 @@
       "type": "boolean",
       "title": "Open the pane when new steps arrive",
       "description": "Opens the pane beside the transcript when steps are found, unless you closed it.",
+      "default": true
+    },
+    "paneStyle": {
+      "type": "string",
+      "title": "Where the tree is drawn inside herdr",
+      "description": "auto: when Claude runs inside herdr, show the tree in a herdr pane of its own (plain characters, keys), and keep /upnext for the pane inside Claude. Outside herdr nothing changes. claude: always the pane inside Claude; /upnext herdr still opens the herdr pane on request.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "claude"
+      ]
+    },
+    "herdrLabel": {
+      "type": "boolean",
+      "title": "Show the open count on Claude's herdr pane",
+      "description": "Inside herdr, sets the title of Claude's pane to \"3 next\" while steps are open.",
       "default": true
     },
     "scanToolOutput": {

@@ -38,6 +38,7 @@ const addingA = atom({ plugin: 'upnext', key: 'adding' } as const, null as strin
 const tidyingA = atom({ plugin: 'upnext', key: 'isTidying' } as const, false)
 const filterA = atom({ plugin: 'upnext', key: 'filter' } as const, null as string | null)
 const showArchivedA = atom({ plugin: 'upnext', key: 'showArchived' } as const, false)
+const viewerA = atom({ plugin: 'upnext', key: 'herdrViewer' } as const, null as string | null)
 
 // Options, set by register (it runs again on every reload), and the project.
 const cfg = {
@@ -490,6 +491,7 @@ async function changeRoots($: EngineInterface, fn: (roots: Root[]) => Root[]): P
       })
     }
   }
+  await herdrSync($, roots)
   return roots
 }
 
@@ -755,7 +757,10 @@ async function addRoots($: EngineInterface, incoming: Incoming[]) {
     return added === 0 ? roots : merged.roots
   })
   if (added === 0) return
-  if (cfg.autoOpen && !(await read($, closedA))) await $.ui.open({ id: PANE, title: TITLE })
+  if (cfg.autoOpen && !(await read($, closedA))) {
+    if (herdr.pane !== '') await autoViewer($)
+    else await $.ui.open({ id: PANE, title: TITLE })
+  }
   if (cfg.ghostText) {
     // The top step, as dim text in the prompt box: Tab takes it as a draft.
     const top = topSteps(roots, 1)[0]
@@ -989,6 +994,155 @@ const listStep = (id: string, text: string, status: StepStatus): Step | undefine
   return t === '' ? undefined : { id, text: t, prompt: promptFor('todo', t, []), status, isCollapsed: false, children: [] }
 }
 
+// ---- herdr: a viewer in a herdr pane beside Claude, and a count on Claude's pane ----
+//
+// Inside herdr the tree is drawn by bin/upnext-herdr.py in a herdr pane of its
+// own, with plain characters. It reads a state file this module writes, and
+// asks for actions by appending JSON lines to a second file, read here twice a
+// second. Claude's own pane is untouched, and `/upnext` still opens it.
+
+const herdr = {
+  /** Claude's herdr pane while the viewer is in use; '' otherwise. */
+  pane: '',
+  /** Claude's herdr pane, whenever Claude runs inside herdr. */
+  inside: '',
+  bin: 'herdr',
+  dir: '',
+  cwd: '',
+  label: true,
+  lastLabel: '',
+  lastState: '',
+  isPolling: false,
+}
+
+const fileId = (pane: string) => pane.replace(/[^A-Za-z0-9_-]/g, '-')
+const statePath = () => `${herdr.dir}/${fileId(herdr.pane)}.json`
+const actionsPath = () => `${herdr.dir}/${fileId(herdr.pane)}.actions`
+
+/** Runs a herdr command; its output, or undefined when it failed. */
+async function herdrRun($: EngineInterface, args: string[]): Promise<string | undefined> {
+  try {
+    const r = await $.process.run([herdr.bin, ...args], { timeoutMs: 5000 })
+    return r.exitCode === 0 ? r.stdout : undefined
+  } catch {
+    return undefined
+  }
+}
+
+type FlatStep = { id: string; text: string; status: StepStatus; depth: number }
+
+const flatSteps = (steps: Step[], depth = 0): FlatStep[] =>
+  steps.flatMap(s => [
+    { id: s.id, text: plain(s.text).replace(/`/g, ''), status: s.agentId !== undefined ? 'running' : s.status, depth },
+    ...(s.isCollapsed ? [] : flatSteps(s.children, depth + 1)),
+  ])
+
+/** Writes what the viewer draws, and the count on Claude's pane, when either changed. */
+async function herdrSync($: EngineInterface, roots: Root[]) {
+  if (herdr.pane === '' || herdr.dir === '') return
+  const shown = live(roots)
+  const state = {
+    version: 1,
+    claudePane: herdr.pane,
+    roots: shown.map(r => ({ id: r.id, kind: r.kind, title: plain(r.title), color: colorOf(r), steps: flatSteps(r.steps) })),
+  }
+  const text = JSON.stringify(state)
+  if (text !== herdr.lastState) {
+    herdr.lastState = text
+    await $.fs.write(statePath(), text).catch(() => {
+      herdr.lastState = ''
+    })
+  }
+  if (herdr.label) {
+    const open = shown.flatMap(r => allSteps(r.steps)).filter(isOpen).length
+    await herdrLabel($, open > 0 ? `${open} next` : '')
+  }
+}
+
+async function herdrLabel($: EngineInterface, label: string) {
+  if (label === herdr.lastLabel) return
+  herdr.lastLabel = label
+  const base = ['pane', 'report-metadata', herdr.pane, '--source', 'upnext']
+  await herdrRun($, label !== '' ? [...base, '--title', label] : [...base, '--clear-title'])
+}
+
+const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
+
+/** Opens the viewer in a herdr pane to the right of Claude's; says how it went. */
+async function openViewer($: EngineInterface): Promise<string> {
+  const existing = await read($, viewerA)
+  if (existing !== null && (await herdrRun($, ['pane', 'get', existing])) !== undefined) return 'The Up next viewer is already open in herdr.'
+  herdr.lastState = ''
+  await herdrSync($, await read($, rootsA))
+  const out = await herdrRun($, ['pane', 'split', herdr.pane, '--direction', 'right', '--ratio', '0.68', '--cwd', herdr.cwd || '.', '--no-focus'])
+  let id: string | undefined
+  try {
+    id = (JSON.parse(out ?? '') as { result?: { pane?: { pane_id?: string } } }).result?.pane?.pane_id
+  } catch {
+    id = undefined
+  }
+  if (id === undefined) return 'Could not open a herdr pane (is herdr running?).'
+  await update($, viewerA, () => id)
+  const script = `${$.plugin.root}/bin/upnext-herdr.py`
+  await herdrRun($, ['pane', 'run', id, `exec python3 ${shellQuote(script)} ${shellQuote(statePath())} ${shellQuote(actionsPath())}`])
+  return 'Opened Up next in a herdr pane to the right.'
+}
+
+/** Opens the viewer when steps arrive, unless the person closed it. */
+async function autoViewer($: EngineInterface) {
+  const existing = await read($, viewerA)
+  if (existing !== null) {
+    if ((await herdrRun($, ['pane', 'get', existing])) !== undefined) return
+    // It was open and is gone: the person closed it. Stay closed until asked.
+    await update($, viewerA, () => null)
+    await update($, closedA, () => true)
+    return
+  }
+  await openViewer($)
+}
+
+/** Acts on what the viewer asked for since the last look. */
+async function pollViewer($: EngineInterface) {
+  if (herdr.pane === '' || herdr.isPolling) return
+  herdr.isPolling = true
+  try {
+    const st = await $.fs.stat(actionsPath()).catch(() => undefined)
+    if (!st || st.size === 0) return
+    const text = await $.fs.read(actionsPath())
+    await $.fs.write(actionsPath(), '')
+    for (const line of text.split('\n').slice(0, 20)) {
+      let a: { verb?: unknown; id?: unknown }
+      try {
+        a = JSON.parse(line) as typeof a
+      } catch {
+        continue
+      }
+      if (typeof a.id !== 'string' || a.id.length > 120) continue
+      await viewerAction($, String(a.verb), a.id)
+    }
+  } catch (error) {
+    $.ui.log(`upnext: herdr viewer: ${String(error)}`)
+  } finally {
+    herdr.isPolling = false
+  }
+}
+
+async function viewerAction($: EngineInterface, verb: string, id: string) {
+  const isRoot = (await read($, rootsA)).some(r => r.id === id)
+  switch (verb) {
+    case 'draft':
+      return actOnStep($, id, 'draft')
+    case 'send':
+      return actOnStep($, id, 'send')
+    case 'send-all':
+      return actOnRoot($, id)
+    case 'dismiss':
+      return isRoot ? dismissRoot($, id) : dismissStep($, id)
+    case 'archive':
+      return isRoot ? archive($, id, true) : undefined
+  }
+}
+
 // ---- Commands ------------------------------------------------------------------
 
 async function exportSteps($: EngineInterface, path: string): Promise<string> {
@@ -1031,17 +1185,38 @@ export const register: Register = (on, options) => {
   const scanTools = options.scanToolOutput !== false
   const showBand = options.band !== false
   const keepAcrossSessions = options.keepAcrossSessions !== false
+  const useHerdr = options.paneStyle !== 'claude'
+  herdr.label = options.herdrLabel !== false
 
   on('session.start', async ($, e, next) => {
     cfg.cwd = keepAcrossSessions ? e.cwd : ''
     await $.command.register({
       name: 'upnext',
-      description: 'Show the Up next pane. Also: <stream> to show one stream, all, clear, export [file], issues',
-      argumentHint: '[<stream> | all | clear | export [file] | issues]',
+      description: 'Show the Up next pane. Also: herdr, <stream> to show one stream, all, clear, export [file], issues',
+      argumentHint: '[herdr | <stream> | all | clear | export [file] | issues]',
     })
+    herdr.inside = (await $.env.get('HERDR_PANE_ID').catch(() => undefined)) ?? ''
+    herdr.pane = useHerdr ? herdr.inside : ''
+    herdr.cwd = e.cwd
+    if (herdr.inside !== '') {
+      herdr.bin = (await $.env.get('HERDR_BIN_PATH').catch(() => undefined)) || 'herdr'
+      const home = (await $.env.get('HOME').catch(() => undefined)) ?? ''
+      herdr.dir = home !== '' ? `${home}/.claude/upnext/herdr` : ''
+    }
+    if (herdr.pane !== '' && herdr.dir !== '') {
+      await $.fs.write(actionsPath(), '').catch(() => undefined)
+      try {
+        $.clock.every(500, () => void pollViewer($))
+      } catch {
+        // No timer: requests are still picked up as each turn ends.
+      }
+    }
     if (keepAcrossSessions) await restore($)
     const roots = await changeRoots($, r => r)
-    if (cfg.autoOpen && roots.length > 0 && !(await read($, closedA))) void $.ui.open({ id: PANE, title: TITLE })
+    if (cfg.autoOpen && live(roots).length > 0 && !(await read($, closedA))) {
+      if (herdr.pane !== '') void autoViewer($)
+      else void $.ui.open({ id: PANE, title: TITLE })
+    }
     return next(e)
   })
 
@@ -1053,6 +1228,17 @@ export const register: Register = (on, options) => {
         return { text: 'Cleared the Up next pane.' }
       case 'export':
         return { text: await exportSteps($, rest.join(' ') || 'NEXT_STEPS.md') }
+      case 'herdr': {
+        if (herdr.inside === '' || herdr.dir === '') return { text: 'Claude is not running inside herdr, so there is no herdr pane to open.' }
+        if (herdr.pane === '') {
+          // paneStyle is "claude": start the viewer's link for this session.
+          herdr.pane = herdr.inside
+          await $.fs.write(actionsPath(), '').catch(() => undefined)
+          $.clock.every(500, () => void pollViewer($))
+        }
+        await update($, closedA, () => false)
+        return { text: await openViewer($) }
+      }
       case 'issues':
         // After the command's own line has left the prompt box.
         $.clock.after(150, () => void draftIssues($))
@@ -1078,6 +1264,11 @@ export const register: Register = (on, options) => {
       }
     }
   })
+
+  on('session.end', async ($, e, next) => {
+    if (herdr.pane !== '' && herdr.label) await herdrLabel($, '')
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('ui.close', async ($, e, next) => {
     if (e.id === PANE && e.origin.kind === 'person') await update($, closedA, () => true)
@@ -1109,6 +1300,7 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    await pollViewer($)
     const answer = e.reason === 'answer' ? e.answer : ''
     if (e.agentId !== undefined) {
       await finishAgent($, e.agentId, e.reason, answer)

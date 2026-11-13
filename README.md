@@ -82,6 +82,36 @@ Each line of work gets its own **stream** (⬢), kept across turns:
 
 ▶▶ and ⇶ work per stream. Only one stream can run in order at a time, since it uses the main conversation, but background agents can work on other streams meanwhile.
 
+## Inside herdr
+
+When Claude Code runs inside [herdr](https://herdr.dev), Up next draws its tree in a herdr pane of its own, to the right of Claude's, instead of inside Claude. It uses plain characters, so it lines up however the terminal counts symbol widths.
+
+```
+┌─ claude ───────────────────┬─ upnext ─────────────────┐
+│ transcript…                │ * Up next         3 open │
+│                            │ - # Auth               2 │
+│                            │ > o Rotate the key       │
+│                            │   o Audit the store      │
+│ > _                        │ - # Docs               1 │
+└────────────────────────────┴──────────────────────────┘
+```
+
+| Key | What it does |
+| --- | --- |
+| `j` `k` or ↓ ↑ | Move |
+| Enter or `d` | Drafts the step in Claude's prompt box and moves you to Claude's pane |
+| `s` | Sends the step (on a stream: all its open steps) |
+| `x` | Dismisses the step or stream |
+| `a` | Archives the stream |
+| Space | Folds a stream |
+| `q` | Closes the viewer |
+
+- **When it opens:** when the first steps arrive. If you close it, it stays closed until `/upnext herdr`.
+- **The count:** Claude's herdr pane gets the title "3 next" while steps are open (`herdrLabel`).
+- **The pane inside Claude still works:** `/upnext` opens it as before.
+- **Outside herdr** nothing changes.
+- **Requires** `python3`. The viewer only reads a state file in `~/.claude/upnext/herdr/` and leaves its requests in a second file there. The mod picks them up twice a second and acts on them the same way the pane's buttons do.
+
 ## Using it
 
 | Do this | What happens |
@@ -115,6 +145,7 @@ Open steps are saved per project folder. The next session there brings them back
 | `/upnext` | Opens the pane. If you closed it, it stays closed until you run this again. |
 | `/upnext <stream>` | Shows only the stream whose name matches (exact, then starts with, then contains). Restores it if archived. |
 | `/upnext all` | Shows every stream again. |
+| `/upnext herdr` | Opens the herdr viewer pane (inside herdr only). |
 | `/upnext clear` | Empties the pane and the saved copy. |
 | `/upnext export [file]` | Writes every step as a Markdown checklist (default `NEXT_STEPS.md`). |
 | `/upnext issues` | Drafts a prompt asking Claude to turn the open steps into GitHub issues, showing them to you first. Nothing is created until you send it and approve. |
@@ -137,3 +168,5 @@ Step text comes from replies and tool output, which can quote files and web page
 | `keepAcrossSessions` | `true` | Saves open steps per project folder and restores them. |
 | `autoOpen` | `true` | Opens the pane when new steps arrive. |
 | `scanToolOutput` | `true` | Reads Bash output and todo/task lists too. |
+| `paneStyle` | `auto` | `auto`: inside herdr, draw the tree in a herdr pane; elsewhere, the pane inside Claude. `claude`: always the pane inside Claude (`/upnext herdr` still works). |
+| `herdrLabel` | `true` | Inside herdr, shows the open count as the title of Claude's pane. |
