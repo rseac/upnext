@@ -75,6 +75,10 @@ Each line of work gets its own **stream** (⬢), kept across turns:
   - ✎ on a step offers **move to → another stream** or **→ new stream**.
 - **Above the prompt:** the 1/2/3 row shows the top step of each stream first.
 - **Not streams:** Bash hints, the todo list and "Likely next" guesses stay as their own groups.
+- **Colours:** each stream gets its own colour, picked so neighbours differ. The 1/2/3 row marks each step with its stream's colour.
+- **Archive (⊟):** parks a stream. It leaves the tree, the 1/2/3 row and the count, and waits under **Archived** at the bottom of the pane until you press **restore**. If a reply picks the topic up again, the stream comes back by itself.
+- **One stream only (◎):** shows just that stream. **Show all** (`a`) brings the rest back. `/upnext <name>` does the same from the prompt.
+- **Nudges:** a stream with open steps and no activity for 10 turns gets one toast, so it isn't forgotten. Change or turn off with `nudgeAfter`.
 
 ▶▶ and ⇶ work per stream. Only one stream can run in order at a time, since it uses the main conversation, but background agents can work on other streams meanwhile.
 
@@ -109,6 +113,8 @@ Open steps are saved per project folder. The next session there brings them back
 | Command | What it does |
 | --- | --- |
 | `/upnext` | Opens the pane. If you closed it, it stays closed until you run this again. |
+| `/upnext <stream>` | Shows only the stream whose name matches (exact, then starts with, then contains). Restores it if archived. |
+| `/upnext all` | Shows every stream again. |
 | `/upnext clear` | Empties the pane and the saved copy. |
 | `/upnext export [file]` | Writes every step as a Markdown checklist (default `NEXT_STEPS.md`). |
 | `/upnext issues` | Drafts a prompt asking Claude to turn the open steps into GitHub issues, showing them to you first. Nothing is created until you send it and approve. |
@@ -124,6 +130,7 @@ Step text comes from replies and tool output, which can quote files and web page
 | `clickAction` | `draft` | `send` makes a click send the step right away; ▶ then becomes ⎘ (draft first). |
 | `extractor` | `auto` | `auto`: read replies for free, and ask a fork of the session only when a reply lists nothing, or to check steps you ran. `heuristic`: never call a model. `model`: always ask the fork, which sees the whole conversation and reuses its prompt cache (about one short reply per turn). The pane shows "finding steps…" while it works. |
 | `minAnswerChars` | `80` | Replies shorter than this never trigger a model call. |
+| `nudgeAfter` | `10` | Turns a stream can sit idle with open steps before one toast says so. `0` turns nudges off. |
 | `band` | `true` | Shows the top three open steps above the prompt box. |
 | `ghostText` | `true` | Offers the top new step as dim text in the prompt box. |
 | `statusLine` | `true` | Shows "✦ 3 next steps" in the status line. |

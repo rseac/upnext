@@ -36,6 +36,8 @@ const autopilotA = atom({ plugin: 'upnext', key: 'autopilot' } as const, null as
 const editingA = atom({ plugin: 'upnext', key: 'editing' } as const, null as string | null)
 const addingA = atom({ plugin: 'upnext', key: 'adding' } as const, null as string | null)
 const tidyingA = atom({ plugin: 'upnext', key: 'isTidying' } as const, false)
+const filterA = atom({ plugin: 'upnext', key: 'filter' } as const, null as string | null)
+const showArchivedA = atom({ plugin: 'upnext', key: 'showArchived' } as const, false)
 
 // Options, set by register (it runs again on every reload), and the project.
 const cfg = {
@@ -45,8 +47,43 @@ const cfg = {
   statusLine: true,
   extractor: 'auto' as 'heuristic' | 'auto' | 'model',
   minAnswerChars: 80,
+  nudgeAfter: 10,
   cwd: '',
 }
+
+// ---- Looks: a glyph and colour per kind of group, and a colour per stream ----
+
+const KIND: Record<RootKind, { glyph: string; color: string }> = {
+  reply: { glyph: '✦', color: 'claude' },
+  offer: { glyph: '◇', color: 'suggestion' },
+  tool: { glyph: '❯', color: 'bashBorder' },
+  todo: { glyph: '☰', color: 'planMode' },
+  likely: { glyph: '➜', color: 'remember' },
+  mine: { glyph: '✚', color: 'ide' },
+  stream: { glyph: '⬢', color: 'claude' },
+}
+
+// Theme keys, so the colours follow the person's theme. 'ide' is kept for "Your steps".
+const PALETTE = ['claude', 'suggestion', 'success', 'warning', 'merged', 'planMode', 'remember', 'permission', 'autoAccept']
+
+/** The least-used colour among the streams, so neighbours differ. */
+function pickColor(roots: Root[]): number {
+  const used = PALETTE.map(() => 0)
+  for (const r of roots) if (r.kind === 'stream' && r.color !== undefined && used[r.color] !== undefined) used[r.color]! += 1
+  return used.indexOf(Math.min(...used))
+}
+
+function colorOf(root: Root): string {
+  if (root.kind !== 'stream') return KIND[root.kind].color
+  if (root.id === 'mine') return 'ide'
+  if (root.color !== undefined && PALETTE[root.color]) return PALETTE[root.color]!
+  let h = 0
+  for (const c of root.id) h = (h * 31 + c.charCodeAt(0)) >>> 0
+  return PALETTE[h % PALETTE.length]!
+}
+
+/** Groups in the tree: not parked. */
+const live = (roots: Root[]) => roots.filter(r => r.isArchived !== true)
 
 // A reply that says the work did not get done.
 const FAILED =
@@ -180,7 +217,7 @@ function dedupe<R extends Root>(existing: Root[], incoming: R[]): R[] {
 function topSteps(roots: Root[], n: number): { root: Root; step: Step }[] {
   const firsts: { root: Root; step: Step }[] = []
   const rest: { root: Root; step: Step }[] = []
-  for (const root of roots) {
+  for (const root of live(roots)) {
     root.steps
       .filter(s => s.status === 'open')
       .forEach((step, i) => (i === 0 ? firsts : rest).push({ root, step }))
@@ -433,13 +470,26 @@ function isRoots(v: unknown): v is Root[] {
 }
 
 /** Every change to the tree goes through here, so the status line and saved copy follow. */
+// The last copy written, so a change the saved copy does not keep (a step
+// queued, then running) costs no write.
+let lastSaved = ''
+
 async function changeRoots($: EngineInterface, fn: (roots: Root[]) => Root[]): Promise<Root[]> {
   const roots = await update($, rootsA, fn)
   if (cfg.statusLine) {
-    const open = roots.flatMap(r => allSteps(r.steps)).filter(isOpen).length
+    const open = live(roots).flatMap(r => allSteps(r.steps)).filter(isOpen).length
     $.ui.status(open > 0 ? `✦ ${open} next step${open === 1 ? '' : 's'}` : undefined)
   }
-  if (cfg.cwd !== '') await $.store.set(storeKey(), snapshot(roots)).catch(() => undefined)
+  if (cfg.cwd !== '') {
+    const kept = snapshot(roots)
+    const key = `${storeKey()}\n${JSON.stringify(kept)}`
+    if (key !== lastSaved) {
+      lastSaved = key
+      await $.store.set(storeKey(), kept).catch(() => {
+        lastSaved = ''
+      })
+    }
+  }
   return roots
 }
 
@@ -678,11 +728,12 @@ function mergeIncoming(roots: Root[], incoming: Incoming[], turn: number): { roo
     if (fresh.length === 0) continue
     added += fresh.length
     if (target) {
-      list = list.map(r => (r.id === target.id ? { ...r, turn, isCollapsed: false, steps: [...r.steps, ...fresh] } : r))
+      // A parked stream that comes up again is back in the tree.
+      list = list.map(r => (r.id === target.id ? { ...r, turn, isCollapsed: false, isArchived: false, steps: [...r.steps, ...fresh] } : r))
       touched.push(target.id)
     } else {
       const title = group.streamHint ?? nameFor(group)
-      const stream: Root = { id: uid(), kind: 'stream', title, turn, isCollapsed: false, steps: fresh }
+      const stream: Root = { id: uid(), kind: 'stream', title, turn, isCollapsed: false, color: pickColor(list), steps: fresh }
       list = [stream, ...list]
       touched.push(stream.id)
     }
@@ -769,7 +820,7 @@ async function addStep($: EngineInterface, rootId: string | null, value: string)
       const root: Root = { id: 'mine', kind: 'stream', title: 'Your steps', turn, isCollapsed: false, steps: [] }
       return [{ ...root, steps: [makeStep('mine', text)] }, ...roots].slice(0, MAX_ROOTS)
     }
-    return roots.map(r => (r.id === target.id ? { ...r, isCollapsed: false, steps: [...r.steps, makeStep(r.id, text)] } : r))
+    return roots.map(r => (r.id === target.id ? { ...r, isCollapsed: false, isArchived: false, steps: [...r.steps, makeStep(r.id, text)] } : r))
   })
 }
 
@@ -810,7 +861,7 @@ async function moveStep($: EngineInterface, id: string, to: string | null) {
     const without = mapAll(roots, s => (s.id === id ? undefined : s))
     if (to === null) {
       const title = nameFor({ ...hit.root, title: '', steps: [step] })
-      return [{ id: uid(), kind: 'stream', title, turn, isCollapsed: false, steps: [step] }, ...without]
+      return [{ id: uid(), kind: 'stream', title, turn, isCollapsed: false, color: pickColor(without), steps: [step] }, ...without]
     }
     return without.map(r => (r.id === to ? { ...r, isCollapsed: false, steps: [...r.steps, step] } : r))
   })
@@ -830,7 +881,7 @@ async function mergeStreams($: EngineInterface, from: string, into: string) {
 
 async function tidy($: EngineInterface) {
   if (await read($, tidyingA)) return
-  const open = (await read($, rootsA))
+  const open = live(await read($, rootsA))
     .flatMap(root => allSteps(root.steps).map(step => ({ root, step })))
     .filter(({ step }) => step.status === 'open' || step.status === 'failed')
     .slice(0, 40)
@@ -880,6 +931,44 @@ async function tidy($: EngineInterface) {
   }
 }
 
+// ---- Archive, focus on one stream, and nudges about idle ones ----------------
+
+async function archive($: EngineInterface, id: string, isArchived: boolean) {
+  await changeRoots($, roots => roots.map(r => (r.id === id ? { ...r, isArchived, isCollapsed: isArchived } : r)))
+  if (isArchived) await update($, filterA, f => (f === id ? null : f))
+}
+
+/** The stream a name points to: exact, then starts with, then contains. */
+function streamNamed(roots: Root[], name: string): Root | undefined {
+  const n = name.trim().toLowerCase()
+  const streams = roots.filter(r => r.kind === 'stream')
+  const t = (r: Root) => plain(r.title).toLowerCase()
+  return streams.find(r => t(r) === n) ?? streams.find(r => t(r).startsWith(n)) ?? streams.find(r => t(r).includes(n))
+}
+
+/** Steps run this turn count as activity for their streams. */
+const touch = ($: EngineInterface, ids: string[], turn: number) =>
+  changeRoots($, roots => roots.map(r => (r.kind === 'stream' && allSteps(r.steps).some(s => ids.includes(s.id)) ? { ...r, turn } : r)))
+
+/** One toast per idle spell for streams with open steps and no activity for a while. */
+async function nudge($: EngineInterface, turn: number) {
+  if (cfg.nudgeAfter <= 0) return
+  const stale = live(await read($, rootsA)).filter(
+    r =>
+      r.kind === 'stream' &&
+      r.turn > 0 &&
+      turn - r.turn >= cfg.nudgeAfter &&
+      (r.nudgedTurn ?? 0) < r.turn &&
+      allSteps(r.steps).some(s => s.status === 'open' || s.status === 'failed'),
+  )
+  if (stale.length === 0) return
+  const ids = stale.map(r => r.id)
+  await changeRoots($, roots => roots.map(r => (ids.includes(r.id) ? { ...r, nudgedTurn: turn } : r)))
+  const names = stale.slice(0, 3).map(r => `“${plain(r.title)}”`).join(', ')
+  const one = stale.length === 1
+  $.ui.toast(`upnext: ${names} ${one ? 'has' : 'have'} been idle ${cfg.nudgeAfter}+ turns. Pick ${one ? 'it' : 'them'} up, or archive with ⊟.`)
+}
+
 // ---- Tool output -------------------------------------------------------------
 
 const todoStatus = (s: string): StepStatus => (s === 'completed' ? 'done' : s === 'in_progress' ? 'running' : 'open')
@@ -905,14 +994,14 @@ const listStep = (id: string, text: string, status: StepStatus): Step | undefine
 async function exportSteps($: EngineInterface, path: string): Promise<string> {
   const roots = await read($, rootsA)
   if (roots.length === 0) return 'There are no steps to export.'
-  const body = roots.map(r => `## ${plain(r.title)}\n\n${bullets(r.steps, 0, true)}`).join('\n\n')
+  const body = roots.map(r => `## ${plain(r.title)}${r.isArchived ? ' (archived)' : ''}\n\n${bullets(r.steps, 0, true)}`).join('\n\n')
   await $.fs.write(path, `# Next steps\n\n${body}\n`)
   const n = roots.flatMap(r => allSteps(r.steps)).length
   return `Wrote ${n} step${n === 1 ? '' : 's'} to ${path}.`
 }
 
 async function draftIssues($: EngineInterface) {
-  const roots = (await read($, rootsA)).filter(r => r.kind !== 'likely')
+  const roots = live(await read($, rootsA)).filter(r => r.kind !== 'likely')
   const list = roots
     .map(r => ({ title: plain(r.title), list: bullets(r.steps) }))
     .filter(r => r.list !== '')
@@ -938,6 +1027,7 @@ export const register: Register = (on, options) => {
   cfg.statusLine = options.statusLine !== false
   cfg.extractor = options.extractor === 'heuristic' || options.extractor === 'model' ? options.extractor : 'auto'
   cfg.minAnswerChars = typeof options.minAnswerChars === 'number' ? options.minAnswerChars : 80
+  cfg.nudgeAfter = typeof options.nudgeAfter === 'number' ? options.nudgeAfter : 10
   const scanTools = options.scanToolOutput !== false
   const showBand = options.band !== false
   const keepAcrossSessions = options.keepAcrossSessions !== false
@@ -946,8 +1036,8 @@ export const register: Register = (on, options) => {
     cfg.cwd = keepAcrossSessions ? e.cwd : ''
     await $.command.register({
       name: 'upnext',
-      description: 'Show the Up next pane. Also: clear, export [file], issues',
-      argumentHint: '[clear | export [file] | issues]',
+      description: 'Show the Up next pane. Also: <stream> to show one stream, all, clear, export [file], issues',
+      argumentHint: '[<stream> | all | clear | export [file] | issues]',
     })
     if (keepAcrossSessions) await restore($)
     const roots = await changeRoots($, r => r)
@@ -967,10 +1057,25 @@ export const register: Register = (on, options) => {
         // After the command's own line has left the prompt box.
         $.clock.after(150, () => void draftIssues($))
         return { text: 'Drafted a prompt to turn the open steps into GitHub issues. Review it, then press Enter.' }
-      default:
+      case '':
+      case 'all': {
+        const wasFiltered = (await read($, filterA)) !== null
+        await update($, filterA, () => null)
         await update($, closedA, () => false)
         await $.ui.open({ id: PANE, title: TITLE, focus: true })
-        return { text: 'Up next pane opened.' }
+        return { text: verb === 'all' && wasFiltered ? 'Up next shows every stream again.' : 'Up next pane opened.' }
+      }
+      default: {
+        const name = (e.args ?? '').trim()
+        const stream = streamNamed(await read($, rootsA), name)
+        if (!stream) return { text: `No stream matches “${clean(name, 40)}”. Try /upnext all to see them all.` }
+        if (stream.isArchived) await archive($, stream.id, false)
+        await changeRoots($, roots => roots.map(r => (r.id === stream.id ? { ...r, isCollapsed: false } : r)))
+        await update($, filterA, () => stream.id)
+        await update($, closedA, () => false)
+        await $.ui.open({ id: PANE, title: TITLE, focus: true })
+        return { text: `Up next shows only “${plain(stream.title)}”. /upnext all shows every stream.` }
+      }
     }
   })
 
@@ -1024,6 +1129,7 @@ export const register: Register = (on, options) => {
     }
 
     const turn = await update($, turnA, n => (n ?? 0) + 1)
+    if (ids.length > 0) await touch($, ids, turn)
     const pending = (await read($, pendingA)).map(r => ({ ...r, turn }))
     await update($, pendingA, () => [])
 
@@ -1052,6 +1158,7 @@ export const register: Register = (on, options) => {
       if (verdict === 'done') await sendNextInOrder($)
       else await stopInOrder($, verdict === 'failed' ? 'a step was not finished' : 'the turn was interrupted')
     }
+    await nudge($, turn)
     return result
   })
 
@@ -1117,7 +1224,7 @@ export const register: Register = (on, options) => {
       const top = topSteps(await read($, rootsA), BAND_ITEMS)
       if (top.length === 0) return below
       const { Box, Text, Button } = $.ui.resolve(e)
-      const room = Math.max(12, Math.floor((e.props.bodyColumns - 14) / top.length) - 5)
+      const room = Math.max(12, Math.floor((e.props.bodyColumns - 14) / top.length) - 7)
       const label = (s: Step) => {
         const t = plain(s.text).replace(/`/g, '')
         return widthOf(t) > room ? `${[...t].slice(0, room - 1).join('')}…` : t
@@ -1127,9 +1234,10 @@ export const register: Register = (on, options) => {
           {below}
           <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
             <Text color="claude">✦ next</Text>
-            {top.map(({ step }, i) => (
+            {top.map(({ root, step }, i) => (
               <Button key={`b:${step.id}`} plain hotkey={String(i + 1)} onPress={() => void click($, step.id)}>
-                {label(step)}
+                <Text color={colorOf(root)}>{KIND[root.kind].glyph} </Text>
+                <Text>{label(step)}</Text>
               </Button>
             ))}
             <Button key="b:hide" plain dimColor hotkey="0" onPress={() => void update($, bandHiddenA, () => turn)}>
@@ -1152,22 +1260,18 @@ export const register: Register = (on, options) => {
     const editing = await read($, editingA)
     const adding = await read($, addingA)
     const turnNow = await read($, turnA)
-    const streams = roots.filter(r => r.kind === 'stream')
+    const showArchived = await read($, showArchivedA)
+    const filterId = await read($, filterA)
+    const focus = filterId === null ? undefined : roots.find(r => r.id === filterId && r.isArchived !== true)
+    const archived = roots.filter(r => r.isArchived === true)
+    const shown = focus ? [focus] : live(roots)
+    const streams = live(roots).filter(r => r.kind === 'stream')
     const cols = Math.max(24, e.props.bodyColumns)
-    const steps = roots.flatMap(r => allSteps(r.steps))
+    const steps = shown.flatMap(r => allSteps(r.steps))
     const done = steps.filter(s => s.status === 'done').length
     const open = steps.length - done
     const hasCards = e.surface === 'terminal'
 
-    const KIND: Record<RootKind, { glyph: string; color: string }> = {
-      reply: { glyph: '✦', color: 'claude' },
-      offer: { glyph: '◇', color: 'suggestion' },
-      tool: { glyph: '❯', color: 'bashBorder' },
-      todo: { glyph: '☰', color: 'planMode' },
-      likely: { glyph: '➜', color: 'remember' },
-      mine: { glyph: '✚', color: 'ide' },
-      stream: { glyph: '⬢', color: 'claude' },
-    }
     const STATUS: Record<StepStatus, { glyph: string; color: string }> = {
       open: { glyph: '○', color: 'inactive' },
       queued: { glyph: '◌', color: 'permission' },
@@ -1208,6 +1312,16 @@ export const register: Register = (on, options) => {
             </Button>
           </Box>
         )}
+        {focus && (
+          <Box key="focus" flexDirection="row">
+            <Text color={colorOf(focus)}>◎ </Text>
+            <Text>only {plain(focus.title).slice(0, Math.max(8, cols - 24))}</Text>
+            <Box flexGrow={1} />
+            <Button key="focus-all" plain hotkey="a" dimColor hover={{ color: 'claude' }} onPress={() => void update($, filterA, () => null)}>
+              Show all
+            </Button>
+          </Box>
+        )}
         {rule}
       </Box>
     )
@@ -1219,7 +1333,33 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    if (roots.length === 0) {
+    const archivedBlock =
+      archived.length === 0 || focus ? null : (
+        <Box key="archived" flexDirection="column" marginTop={1}>
+          <Button key="arch-tg" plain dimColor onPress={() => void update($, showArchivedA, v => !v)}>
+            {`${showArchived ? '▾' : '▸'} Archived · ${archived.length}`}
+          </Button>
+          {showArchived &&
+            archived.map(r => (
+              <Box key={`ar:${r.id}`} flexDirection="row">
+                <Text color={colorOf(r)}>{'  '}{KIND[r.kind].glyph} </Text>
+                <Text dimColor>
+                  {plain(r.title).slice(0, Math.max(8, cols - 26))} · {allSteps(r.steps).filter(isOpen).length} open
+                </Text>
+                <Box flexGrow={1} />
+                <Button key={`ar-back:${r.id}`} plain dimColor hover={{ color: 'success' }} onPress={() => void archive($, r.id, false)}>
+                  restore
+                </Button>
+                <Text> </Text>
+                <Button key={`ar-x:${r.id}`} plain dimColor hover={{ color: 'error' }} onPress={() => void dismissRoot($, r.id)}>
+                  ✕
+                </Button>
+              </Box>
+            ))}
+        </Box>
+      )
+
+    if (shown.length === 0) {
       return (
         <Box flexDirection="column">
           {header}
@@ -1230,13 +1370,14 @@ export const register: Register = (on, options) => {
             <Text dimColor>offers to do more, they land here.</Text>
           </Box>
           {addMine}
+          {archivedBlock}
         </Box>
       )
     }
 
     // Hover cards: drawn last so they paint over the rows below their step,
     // placed by counting the rows drawn above. The terminal's cells are exact.
-    let y = ap ? 3 : 2
+    let y = 2 + (ap ? 1 : 0) + (focus ? 1 : 0)
     const cards: JSX.Element[] = []
     const cardW = Math.min(cols - 4, 64)
     const card = (step: Step, root: Root, top: number) => {
@@ -1335,7 +1476,7 @@ export const register: Register = (on, options) => {
         y += lines.length
         const scope = hasCards ? card(step, root, y) : undefined
         if (step.addedTurn !== undefined && step.addedTurn === turnNow && step.status === 'open' && root.kind === 'stream') {
-          body.push(<Text color="claude"> •</Text>)
+          body.push(<Text color={colorOf(root)}> •</Text>)
         }
         const prefix = [first, ...lines.slice(1).map(() => more)].join('\n')
         const row = (
@@ -1382,13 +1523,13 @@ export const register: Register = (on, options) => {
       })
 
     const rootBlock = (root: Root, index: number) => {
-      const kind = KIND[root.kind]
+      const kind = { glyph: KIND[root.kind].glyph, color: colorOf(root) }
       const left = allSteps(root.steps).filter(isOpen).length
       const forAgents = agentSteps(root).length
       const inOrder = orderSteps(root).length
       const canAdd = root.kind !== 'tool' && root.kind !== 'likely'
       const meta = root.kind === 'todo' ? '' : root.turn > 0 ? ` · turn ${root.turn}` : root.kind === 'likely' ? ' · a guess' : ' · earlier'
-      const titleW = cols - 4 - widthOf(meta) - 6 - (root.kind === 'stream' ? 2 : 0) - (canAdd ? 2 : 0) - (inOrder > 1 ? 3 : 0) - (forAgents > 1 ? 2 : 0) - 4
+      const titleW = cols - 4 - widthOf(meta) - 6 - (root.kind === 'stream' ? (focus ? 4 : 6) : 0) - (canAdd ? 2 : 0) - (inOrder > 1 ? 3 : 0) - (forAgents > 1 ? 2 : 0) - 4
       const title = widthOf(root.title) > titleW ? root.title.slice(0, Math.max(4, titleW - 1)) + '…' : root.title
       const canSendAll = left > 0 && root.kind !== 'likely'
       y += (index === 0 ? 0 : 1) + 1
@@ -1438,6 +1579,18 @@ export const register: Register = (on, options) => {
               </Button>
             )}
             {root.kind === 'stream' && <Text> </Text>}
+            {root.kind === 'stream' && !focus && (
+              <Button key={`fo:${root.id}`} plain dimColor hover={{ color: kind.color }} onPress={() => void update($, filterA, () => root.id)}>
+                ◎
+              </Button>
+            )}
+            {root.kind === 'stream' && !focus && <Text> </Text>}
+            {root.kind === 'stream' && (
+              <Button key={`ar:${root.id}`} plain dimColor hover={{ color: 'warning' }} onPress={() => void archive($, root.id, true)}>
+                ⊟
+              </Button>
+            )}
+            {root.kind === 'stream' && <Text> </Text>}
             {canAdd && (
               <Button key={`add:${root.id}`} plain dimColor hover={{ color: 'ide' }} onPress={() => void update($, addingA, a => (a === root.id ? null : root.id))}>
                 +
@@ -1483,15 +1636,15 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const anyExpanded = roots.some(r => !r.isCollapsed)
+    const anyExpanded = shown.some(r => !r.isCollapsed)
     const hint = cfg.sendOnClick
-      ? 'click sends · ⎘ draft · ✎ edit · ▶▶ in order · ⇶ agents · ✕ dismiss'
-      : 'click drafts · ▶ send · ✎ edit · ▶▶ in order · ⇶ agents · ✕ dismiss'
+      ? 'click sends · ⎘ draft · ✎ edit · ▶▶ in order · ⇶ agents · ◎ only · ⊟ archive · ✕ dismiss'
+      : 'click drafts · ▶ send · ✎ edit · ▶▶ in order · ⇶ agents · ◎ only · ⊟ archive · ✕ dismiss'
 
     return (
       <Box flexDirection="column">
         {header}
-        {roots.map(rootBlock)}
+        {shown.map(rootBlock)}
         <Box flexDirection="column" marginTop={1}>
           {rule}
           <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
@@ -1513,6 +1666,7 @@ export const register: Register = (on, options) => {
           {addMine}
           <Text dimColor>{hint}</Text>
         </Box>
+        {archivedBlock}
         {cards}
       </Box>
     )

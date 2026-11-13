@@ -1,6 +1,6 @@
 {
   "name": "upnext",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
   "author": {
     "name": "rseac"
@@ -42,6 +42,12 @@
       "title": "Shortest reply to ask the model about",
       "description": "Replies shorter than this are read without a model call.",
       "default": 80
+    },
+    "nudgeAfter": {
+      "type": "number",
+      "title": "Nudge about idle streams after this many turns",
+      "description": "When a stream with open steps has had no new or finished steps for this many turns, a toast says so once, so you can pick it up or archive it. 0 turns this off.",
+      "default": 10
     },
     "band": {
       "type": "boolean",

@@ -32,6 +32,12 @@ export type Root = {
   turn: number
   isCollapsed: boolean
   steps: Step[]
+  /** Parked: kept, but out of the tree, the band and the count until restored. */
+  isArchived?: boolean
+  /** A stream's colour, an index into the pane's palette, fixed when it starts. */
+  color?: number
+  /** The turn a "this stream is idle" toast last went out for it. */
+  nudgedTurn?: number
 }
 
 /** A prompt the pane sent (or put in the prompt box), waiting for its turn to finish. */
@@ -69,6 +75,9 @@ declare module 'claude-code' {
       /** The group a new step is being added to. */
       adding: string | null
       isTidying: boolean
+      /** The one stream the pane shows (`/upnext <name>`); null shows them all. */
+      filter: string | null
+      showArchived: boolean
     }
   }
 }

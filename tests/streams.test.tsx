@@ -37,7 +37,11 @@ function engine(on: On, fork: string[] = []) {
   on('command.register', () => ({ value: { command: 'upnext' } }))
   on('command.list', () => ({ value: [] }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.toast', () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', (_, e) => {
+    toasts.push(JSON.stringify(e))
+    return { value: undefined }
+  })
   on('ui.status', () => ({ value: undefined }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('turn.complete', () => ({ text: '' }))
@@ -47,6 +51,7 @@ function engine(on: On, fork: string[] = []) {
   on('model.fork', () => ({
     value: { isAnswered: true as const, text: fork.shift() ?? '{"groups":[],"likely":[],"outcomes":[]}', usage: USAGE },
   }))
+  return { toasts }
 }
 
 /** The stream headers, top to bottom, as "name: step, step". */
@@ -131,6 +136,84 @@ test('the 1/2/3 row offers the top step of each stream first', async ($, on) => 
   await $.turn.complete({ ...TURN, answer: '## Docs follow-ups\n- Document the new CLI flags\n- Fix broken README links', turnId: 't2' })
   const ui = await $.ui.mount(BAND as never)
   const labels = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('b:') && b.key !== 'b:hide').map(b => b.text)
-  expect(labels).toEqual(['Document the new CLI flags', 'Rotate the signing key', 'Fix broken README links'])
+  expect(labels).toEqual(['⬢ Document the new CLI flags', '⬢ Rotate the signing key', '⬢ Fix broken README links'])
+  await ui.unmount()
+})
+
+const RUN = (args: string) => ({ command: 'upnext', args, origin: { kind: 'composer' as const }, presentation: { isFullscreen: true, columns: 120 } })
+
+test('⊟ archives a stream out of the tree and the band; restore brings it back', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/s5', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: '## Auth follow-ups\n- Rotate the signing key', turnId: 't1' })
+  await $.turn.complete({ ...TURN, answer: '## Docs follow-ups\n- Document the new CLI flags', turnId: 't2' })
+  const ui = await $.ui.mount(PANE)
+  const auth = await headerKey(ui, /Auth/)
+  await ui.press({ key: `ar:${auth}` })
+  expect((await streams(ui)).map(s => s.split(':')[0])).toEqual(['Docs'])
+  expect((await ui.findAll({ type: 'Button', text: /Archived · 1/ })).length).toBe(1)
+
+  const band = await $.ui.mount(BAND as never)
+  const labels = (await band.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('b:') && b.key !== 'b:hide').map(b => b.text)
+  expect(labels).toEqual(['⬢ Document the new CLI flags'])
+  await band.unmount()
+
+  await ui.press({ key: 'arch-tg' })
+  await ui.press({ key: `ar-back:${auth}` })
+  expect((await streams(ui)).map(s => s.split(':')[0])).toEqual(['Docs', 'Auth'])
+  await ui.unmount()
+})
+
+test('an archived stream comes back when a reply continues it', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/s6', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: '## Auth follow-ups\n- Rotate the signing key', turnId: 't1' })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: `ar:${await headerKey(ui, /Auth/)}` })
+  expect(await streams(ui)).toEqual([])
+  await $.turn.complete({ ...TURN, answer: '## Auth follow-ups\n- Audit the token store', turnId: 't2' })
+  expect(await streams(ui)).toEqual(['Auth: Rotate the signing key; Audit the token store;'])
+  await ui.unmount()
+})
+
+test('/upnext <stream> shows only that stream; /upnext all shows them all', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/s7', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: '## Auth follow-ups\n- Rotate the signing key', turnId: 't1' })
+  await $.turn.complete({ ...TURN, answer: '## Docs follow-ups\n- Document the new CLI flags', turnId: 't2' })
+  const r = await $.command.run(RUN('auth'))
+  expect(r.text).toContain('only “Auth”')
+  const ui = await $.ui.mount(PANE)
+  expect((await streams(ui)).map(s => s.split(':')[0])).toEqual(['Auth'])
+  expect((await $.command.run(RUN('nothing-like-it'))).text).toContain('No stream matches')
+  await $.command.run(RUN('all'))
+  expect((await streams(ui)).map(s => s.split(':')[0])).toEqual(['Docs', 'Auth'])
+  await ui.press({ key: `fo:${await headerKey(ui, /Docs/)}` })
+  expect((await streams(ui)).map(s => s.split(':')[0])).toEqual(['Docs'])
+  await ui.press({ key: 'focus-all' })
+  expect((await streams(ui)).length).toBe(2)
+  await ui.unmount()
+})
+
+test('a stream left idle gets one nudge', async ($, on) => {
+  const { toasts } = engine(on)
+  await $.session.start({ cwd: '/s8', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: '## Auth follow-ups\n- Rotate the signing key', turnId: 't1' })
+  for (let i = 2; i <= 14; i++) await $.turn.complete({ ...TURN, answer: 'ok', turnId: `t${i}` })
+  const nudges = toasts.filter(t => t.includes('idle'))
+  expect(nudges.length).toBe(1)
+  expect(nudges[0]).toContain('“Auth” has been idle 10+ turns')
+})
+
+test('streams get different colours', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/s9', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: '## Auth follow-ups\n- Rotate the signing key', turnId: 't1' })
+  await $.turn.complete({ ...TURN, answer: '## Docs follow-ups\n- Document the new CLI flags', turnId: 't2' })
+  const ui = await $.ui.mount(PANE)
+  const glyphs = (await ui.findAll({ type: 'Text', text: /^⬢ $/ })) as { props?: { color?: string } }[]
+  const colors = glyphs.map(g => g.props?.color)
+  expect(colors.length).toBe(2)
+  expect(colors[0]).not.toBe(colors[1])
   await ui.unmount()
 })
