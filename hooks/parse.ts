@@ -2,21 +2,23 @@
 // inline markdown into styled runs for drawing. No `$` here, so tests can
 // call these directly.
 
-export type ParsedStep = { text: string; children: ParsedStep[] }
+export type ParsedStep = { text: string; children: ParsedStep[]; isDone?: boolean }
 export type ParsedRoot = {
-  kind: 'reply' | 'offer' | 'tool'
+  kind: 'reply' | 'offer' | 'tool' | 'likely'
   title: string
   steps: ParsedStep[]
 }
 
 // Headings and lead-ins that introduce things to do.
 const CUE =
-  /\b(next steps?|next up|what'?s next|where to go from here|going forward|suggest(?:ed|ions?)?|follow[- ]?ups?|to[- ]?dos?|action items?|recommend(?:ed|ations?)?|(?:some|a few|possible|your|other) options|you (?:could|can|might|may)(?: also)?|remaining|still to do|left to do|not (?:yet )?done|ideas|consider|further (?:work|improvements|steps)|possible (?:improvements|enhancements|extensions)|future work|want me to|would you like|should i|i can also|happy to|optional)\b/i
+  /(?:^\W*(?:up )?next\W*$)|\b(next steps?|next up|what'?s next|what'?s left|what remains|still open|open items|before (?:merging|shipping|release)|where to go from here|going forward|suggest(?:ed|ions?)?|follow[- ]?ups?|to[- ]?dos?|action items?|recommend(?:ed|ations?)?|(?:some|a few|possible|your|other) options|you (?:could|can|might|may)(?: also)?|remaining|still to do|left to do|not (?:yet )?done|ideas|consider|further (?:work|improvements|steps)|possible (?:improvements|enhancements|extensions)|future work|want me to|would you like|should i|i can also|happy to|optional)\b/i
 // Extra cues that only make sense in tool output (scaffolders, installers).
 const TOOL_CUE = /\b(get(?:ting)? started|now run|to fix|then run|next,? run)\b/i
 
 const FENCE = /^\s*(```|~~~)/
-const LIST = /^(\s*)(?:[-*+•]|\d{1,3}[.)])\s+(?:\[[ xX]\]\s+)?(.+)$/
+const LIST = /^(\s*)(?:[-*+•]|\d{1,3}[.)])\s+(?:\[([ xX])\]\s+)?(.+)$/
+const TABLE_ROW = /^\s*\|(.+)\|\s*$/
+const TABLE_RULE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/
 const HEADING = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/
 const BOLD_LINE = /^\s{0,3}(?:\*\*|__)([^*_]+?)(?:\*\*|__)\s*:?\s*$/
 const BOLD_INLINE = /^\s{0,3}\*\*([^*]+?):?\*\*:?\s+(.+)$/
@@ -100,6 +102,7 @@ type Section = {
   group?: ParsedStep
   stack: { indent: number; node: ParsedStep }[]
   sawItem: boolean
+  tableRows: number
 }
 
 const prune = (steps: ParsedStep[]): ParsedStep[] =>
@@ -157,7 +160,7 @@ export function parseSections(
       }
       close()
       if (isCue(h.text)) {
-        section = { title: h.text, level: h.level, steps: [], stack: [], sawItem: false }
+        section = { title: h.text, level: h.level, steps: [], stack: [], sawItem: false, tableRows: 0 }
         if (h.inline !== undefined) {
           section.steps.push({ text: tidy(h.inline), children: [] })
           close()
@@ -170,7 +173,8 @@ export function parseSections(
     const m = LIST.exec(line)
     if (m) {
       const indent = indentOf(m[1]!)
-      const node: ParsedStep = { text: tidy(m[2]!), children: [] }
+      const node: ParsedStep = { text: tidy(m[3]!), children: [] }
+      if (m[2] === 'x' || m[2] === 'X') node.isDone = true
       const stack = section.stack
       while (stack.length > 0 && stack[stack.length - 1]!.indent >= indent) stack.pop()
       const parent = stack[stack.length - 1]?.node
@@ -181,6 +185,18 @@ export function parseSections(
       continue
     }
 
+    // A table: its first column holds the steps; the first row is the header.
+    if (TABLE_RULE.test(line)) continue
+    const row = TABLE_ROW.exec(line)
+    if (row) {
+      section.tableRows += 1
+      const cell = tidy(row[1]!.split('|')[0] ?? '')
+      if (section.tableRows > 1 && cell !== '' && !/^[-#\d.\s]*$/.test(cell)) {
+        ;(section.group ? section.group.children : section.steps).push({ text: cell, children: [] })
+        section.sawItem = true
+      }
+      continue
+    }
     const indent = indentOf(line)
     const last = section.stack[section.stack.length - 1]
     if (opts.loose === true && indent >= 1 && !last) {
@@ -243,8 +259,12 @@ export function parseOffers(md: string): ParsedRoot[] {
     for (const sentence of para.split(/(?<=[?.!])\s+/)) {
       const m = OFFER.exec(sentence.trim())
       if (!m) continue
-      let phrase = m[1]!.replace(/\s+(?:too|as well|for you|next|now)$/i, '')
+      let phrase = m[1]!
+        .replace(/\s+(?:too|as well|for you|next|now)$/i, '')
+        .replace(/^(?:go ahead and|also|then)\s+/i, '')
       if (/^(?:help|answer|clarify)\b/i.test(phrase)) continue
+      // "start on 1–3", "do all of these": only makes sense next to the list it points at.
+      if (/\b(?:#?\d+(?:\s*[–-]\s*\d+)?|these|those|them|any of (?:these|them)|all of (?:these|them)|either)$/i.test(phrase)) continue
       const parts = phrase
         .split(/,\s*or\s+|\s+or\s+(?=\S)/i)
         .map(p => p.trim())
@@ -295,6 +315,16 @@ export function parseReply(md: string): ParsedRoot[] {
     .map(r => ({ ...r, steps: r.steps.filter(s => !seen.has(keyOf(s.text))) }))
     .filter(r => r.steps.length > 0)
   return [...sections, ...offers]
+}
+
+/**
+ * The slash command a step runs, if it is one: "/review high", "`/review`",
+ * "Run `/review high`". Returns the command line without backticks.
+ */
+export function commandOf(text: string): string | undefined {
+  const t = plain(text).trim()
+  const m = /^(?:(?:run|use|invoke|try)\s+)?`?(\/[a-z][\w:.-]*(?:[^`\n]*)?)`?\.?$/i.exec(t)
+  return m ? m[1]!.trim() : undefined
 }
 
 export const flat = (steps: ParsedStep[]): ParsedStep[] =>

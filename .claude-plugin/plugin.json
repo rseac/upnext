@@ -1,9 +1,18 @@
 {
   "name": "next-steps-pane",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A side pane that gathers the next steps Claude suggests into a tree you can click to draft, send or dismiss.",
-  "author": { "name": "rseac" },
-  "keywords": ["next-steps", "suggestions", "pane", "tree", "function-hooks", "ui"],
+  "author": {
+    "name": "rseac"
+  },
+  "keywords": [
+    "next-steps",
+    "suggestions",
+    "pane",
+    "tree",
+    "function-hooks",
+    "ui"
+  ],
   "types": "./types/index.d.ts",
   "userConfig": {
     "clickAction": {
@@ -11,19 +20,26 @@
       "title": "What a click on a step does",
       "description": "draft: put the step's prompt in the prompt box for you to edit and send. send: send it right away. Steps from Bash output are always drafted.",
       "default": "draft",
-      "options": ["draft", "send"]
+      "options": [
+        "draft",
+        "send"
+      ]
     },
     "extractor": {
       "type": "string",
       "title": "How to find next steps",
-      "description": "heuristic: read headings, lists and offers in each reply (free, instant). model: ask a fork of this session, which sees the whole conversation and shares its prompt cache (about one short reply per turn); falls back to heuristic.",
-      "default": "heuristic",
-      "options": ["heuristic", "model"]
+      "description": "auto: read each reply's headings, lists and offers; when a reply has none, ask a fork of the session (about one short reply) to find implicit steps or guess what you'll ask next, and check whether steps you ran got done. heuristic: the reader alone, never a model call. model: always ask the fork.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "heuristic",
+        "model"
+      ]
     },
     "minAnswerChars": {
       "type": "number",
       "title": "Shortest reply to ask the model about",
-      "description": "With the model extractor, replies shorter than this are read by the heuristic alone.",
+      "description": "Replies shorter than this are read without a model call.",
       "default": 80
     },
     "band": {
@@ -36,6 +52,18 @@
       "type": "boolean",
       "title": "Offer the top step as ghost text",
       "description": "Shows the top new step as dim text in the prompt box; Tab takes it as a draft.",
+      "default": true
+    },
+    "statusLine": {
+      "type": "boolean",
+      "title": "Count open steps in the status line",
+      "description": "Shows \"✦ 3 next steps\" in the status line while steps are open.",
+      "default": true
+    },
+    "keepAcrossSessions": {
+      "type": "boolean",
+      "title": "Keep open steps for the next session",
+      "description": "Saves open steps per project folder and brings them back, folded, when a session starts there.",
       "default": true
     },
     "autoOpen": {

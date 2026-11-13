@@ -1,4 +1,4 @@
-export type StepStatus = 'open' | 'queued' | 'running' | 'done'
+export type StepStatus = 'open' | 'queued' | 'running' | 'done' | 'failed'
 
 /** One thing to do. `prompt` is what gets sent when it runs. */
 export type Step = {
@@ -8,10 +8,12 @@ export type Step = {
   status: StepStatus
   isCollapsed: boolean
   children: Step[]
+  /** The background agent working on it, while one is. */
+  agentId?: string
 }
 
 /** Where a group of steps came from. */
-export type RootKind = 'reply' | 'offer' | 'tool' | 'todo'
+export type RootKind = 'reply' | 'offer' | 'tool' | 'todo' | 'likely'
 
 /** A top-level group in the tree: one section of one reply, one tool hint set, the todo list. */
 export type Root = {

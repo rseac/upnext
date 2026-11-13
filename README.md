@@ -50,6 +50,11 @@ At the end of each turn the mod reads:
 - **Offers** in the closing lines, like "Want me to add tests or update the README?". Each option becomes its own step.
 - **Bash output**: hints like ``Run `npm audit fix` ``, and "Next steps" blocks that scaffolders print.
 - **Todo and task lists**: open items from TodoWrite and TaskCreate/TaskUpdate, updated as they change.
+- **A guess, when there is nothing else**: if a reply lists no steps, a fork of the session reads the conversation. It either finds the steps the reply implies, or adds a dim **Likely next** group with up to three prompts you'd probably send next. This costs about one short reply. Replies that list their steps cost nothing.
+
+A step can be a slash command, like `/code-review high`. Steps naming a command this session doesn't have are dropped. The model is also told which skills and commands you have, so it can suggest them.
+
+Checked boxes (`- [x]`) arrive already done, and tables of steps are read by their first column.
 
 Each turn adds a new group at the top and folds the older ones away. A step that is already open is not added twice.
 
@@ -60,6 +65,8 @@ Each turn adds a new group at the top and folds the older ones away. A step that
 | Click a step | Puts its prompt in the prompt box as a draft. Edit it, then press Enter. Its sub-steps go along with it. |
 | ▶ on a step | Sends it right away. |
 | ▶ on a group | Sends every open step in the group as one prompt. |
+| ⇶ on a group | Hands each open step (up to five) to its own background agent. Each step shows ⇶ while its agent works, then ✓ or ✗, with a toast. |
+| Hover a step | Shows the full prompt it will draft or send (terminal). |
 | `1` `2` `3` | From an empty prompt box: drafts that step from the row above the prompt. `0` hides the row until the next turn. |
 | Tab | Takes the top new step, shown as dim ghost text in the prompt box. |
 | ✕ | Dismisses the step or the group. |
@@ -68,9 +75,18 @@ Each turn adds a new group at the top and folds the older ones away. A step that
 
 Steps found in Bash output are only ever drafted, never sent straight away (their group shows ✎ instead of ▶), since that output can come from anywhere.
 
-The status mark shows progress: ○ open, ◌ queued, ◐ running, ✓ done. A step turns ✓ when the turn it started finishes.
+The status mark shows progress: ○ open, ◌ queued, ◐ running, ⇶ with a background agent, ✓ done, ✗ not done.
 
-`/next-steps` opens the pane. `/next-steps clear` empties it. If you close the pane, it stays closed until you run `/next-steps` again.
+When a step's turn ends, it gets ✓, or ✗ if the reply says it couldn't finish. In `auto` and `model` mode, a fork then checks the work and corrects the mark if needed. Steps also track prompts you type yourself: if what you type clearly matches an open step, that step is marked too.
+
+Open steps are saved per project folder. The next session there brings them back, folded and marked "earlier". The status line shows how many are open.
+
+| Command | What it does |
+| --- | --- |
+| `/next-steps` | Opens the pane. If you closed it, it stays closed until you run this again. |
+| `/next-steps clear` | Empties the pane and the saved copy. |
+| `/next-steps export [file]` | Writes every step as a Markdown checklist (default `NEXT_STEPS.md`). |
+| `/next-steps issues` | Drafts a prompt asking Claude to turn the open steps into GitHub issues, showing them to you first. Nothing is created until you send it and approve. |
 
 ### Safety
 
@@ -81,9 +97,11 @@ Step text comes from replies and tool output, which can quote files and web page
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `clickAction` | `draft` | `send` makes a click send the step right away; ▶ then becomes ✎ (draft first). |
-| `extractor` | `heuristic` | `model` asks a fork of the session to find the steps. The fork sees the whole conversation and reuses its prompt cache, so it costs about one short reply per turn. The pane shows "finding steps…" meanwhile. If the call fails, the heuristic is used. |
-| `minAnswerChars` | `80` | With `model`, shorter replies are read by the heuristic alone. |
+| `extractor` | `auto` | `auto`: read replies for free, and ask a fork of the session only when a reply lists nothing, or to check steps you ran. `heuristic`: never call a model. `model`: always ask the fork, which sees the whole conversation and reuses its prompt cache (about one short reply per turn). The pane shows "finding steps…" while it works. |
+| `minAnswerChars` | `80` | Replies shorter than this never trigger a model call. |
 | `band` | `true` | Shows the top three open steps above the prompt box. |
 | `ghostText` | `true` | Offers the top new step as dim text in the prompt box. |
+| `statusLine` | `true` | Shows "✦ 3 next steps" in the status line. |
+| `keepAcrossSessions` | `true` | Saves open steps per project folder and restores them. |
 | `autoOpen` | `true` | Opens the pane when new steps arrive. |
 | `scanToolOutput` | `true` | Reads Bash output and todo/task lists too. |
