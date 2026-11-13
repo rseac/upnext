@@ -13,7 +13,7 @@ export type Step = {
 }
 
 /** Where a group of steps came from. */
-export type RootKind = 'reply' | 'offer' | 'tool' | 'todo' | 'likely'
+export type RootKind = 'reply' | 'offer' | 'tool' | 'todo' | 'likely' | 'mine'
 
 /** A top-level group in the tree: one section of one reply, one tool hint set, the todo list. */
 export type Root = {
@@ -34,6 +34,16 @@ export type Inflight = {
   turnId?: string
 }
 
+/** A group being run one step per turn, in order. */
+export type Autopilot = {
+  rootId: string
+  /** Step ids still to send, in order. */
+  queue: string[]
+  /** The step whose turn is running now. */
+  current?: string
+  total: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'upnext': {
@@ -46,6 +56,12 @@ declare module 'claude-code' {
       loadingTurn: number
       /** The 1/2/3 row above the prompt stays hidden through this turn. */
       bandHiddenTurn: number
+      autopilot: Shaped<Autopilot | null>
+      /** The step whose text is being edited in the pane. */
+      editing: string | null
+      /** The group a new step is being added to. */
+      adding: string | null
+      isTidying: boolean
     }
   }
 }

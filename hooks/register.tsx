@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { CommandInfo, EngineInterface, Register, RenderElement } from 'claude-code'
 
-import type { Inflight, Root, RootKind, Step, StepStatus } from '../types'
+import type { Autopilot, Inflight, Root, RootKind, Step, StepStatus } from '../types'
 import {
   clean,
   commandOf,
@@ -32,6 +32,10 @@ const turnA = atom({ plugin: 'upnext', key: 'turn' } as const, 0)
 const closedA = atom({ plugin: 'upnext', key: 'isClosedByPerson' } as const, false)
 const loadingA = atom({ plugin: 'upnext', key: 'loadingTurn' } as const, 0)
 const bandHiddenA = atom({ plugin: 'upnext', key: 'bandHiddenTurn' } as const, 0)
+const autopilotA = atom({ plugin: 'upnext', key: 'autopilot' } as const, null as Autopilot | null, { shape: 'autopilot-1' })
+const editingA = atom({ plugin: 'upnext', key: 'editing' } as const, null as string | null)
+const addingA = atom({ plugin: 'upnext', key: 'adding' } as const, null as string | null)
+const tidyingA = atom({ plugin: 'upnext', key: 'isTidying' } as const, false)
 
 // Options, set by register (it runs again on every reload), and the project.
 const cfg = {
@@ -66,6 +70,7 @@ function promptFor(kind: RootKind, text: string, ancestors: string[], source?: s
     case 'tool':
       return source ? `${t}\n\n(Suggested by the output of \`${source}\`.)` : t
     case 'likely':
+    case 'mine':
       return t
     case 'reply':
       return ancestors.length > 0 ? `${t}\n\n(This is part of: ${ancestors.map(plain).join(' › ')}.)` : t
@@ -106,6 +111,23 @@ function find(roots: Root[], id: string): { root: Root; step: Step } | undefined
   for (const root of roots) {
     const step = allSteps(root.steps).find(s => s.id === id)
     if (step) return { root, step }
+  }
+  return undefined
+}
+
+/** The step with the steps above it, outermost first. */
+function pathTo(roots: Root[], id: string): { root: Root; step: Step; ancestors: Step[] } | undefined {
+  const walk = (steps: Step[], above: Step[]): { step: Step; ancestors: Step[] } | undefined => {
+    for (const step of steps) {
+      if (step.id === id) return { step, ancestors: above }
+      const hit = walk(step.children, [...above, step])
+      if (hit) return hit
+    }
+    return undefined
+  }
+  for (const root of roots) {
+    const hit = walk(root.steps, [])
+    if (hit) return { root, ...hit }
   }
   return undefined
 }
@@ -318,6 +340,7 @@ async function modelPass($: EngineInterface, job: Job) {
       const done = answer!.outcomes.get(i + 1)
       if (done !== undefined) verdict.set(s.id, done)
     })
+    if ([...verdict.values()].includes(false)) await stopInOrder($, 'a check found a step not done')
     await changeRoots($, roots =>
       roots.map(r => ({
         ...r,
@@ -378,7 +401,7 @@ function isRoots(v: unknown): v is Root[] {
         r !== null &&
         typeof (r as Root).id === 'string' &&
         typeof (r as Root).title === 'string' &&
-        ['reply', 'offer', 'tool'].includes((r as Root).kind) &&
+        ['reply', 'offer', 'tool', 'mine'].includes((r as Root).kind) &&
         Array.isArray((r as Root).steps) &&
         (r as Root).steps.every(s => isStep(s)),
     )
@@ -545,7 +568,9 @@ async function addRoots($: EngineInterface, incoming: Root[]) {
     if (fresh.length === 0) return roots
     // Newest first. Earlier groups fold away, todo and task lists stay as they
     // are, and earlier guesses at what comes next are dropped.
-    const older = roots.filter(r => r.kind !== 'likely').map(r => (r.kind === 'todo' ? r : { ...r, isCollapsed: true }))
+    const older = roots
+      .filter(r => r.kind !== 'likely')
+      .map(r => (r.kind === 'todo' || r.kind === 'mine' ? r : { ...r, isCollapsed: true }))
     return [...fresh, ...older].slice(0, MAX_ROOTS)
   })
   if (fresh.length === 0) return
@@ -554,6 +579,140 @@ async function addRoots($: EngineInterface, incoming: Root[]) {
     // The top step, as dim text in the prompt box: Tab takes it as a draft.
     const top = topSteps(roots, 1)[0]
     if (top) void $.prompt.suggest({ text: promptForStep(top.step) }).catch(() => undefined)
+  }
+}
+
+// ---- Run in order: one step per turn, stopping at the first that is not done ----
+
+/** Steps a group can run in order: its open top-level steps. */
+const orderSteps = (root: Root) =>
+  root.kind === 'tool' || root.kind === 'likely' ? [] : root.steps.filter(s => s.status === 'open' || s.status === 'failed')
+
+async function startInOrder($: EngineInterface, rootId: string) {
+  if (await read($, autopilotA)) {
+    $.ui.toast('upnext: a group is already running in order; stop it first')
+    return
+  }
+  const root = (await read($, rootsA)).find(r => r.id === rootId)
+  const queue = root ? orderSteps(root).map(s => s.id) : []
+  if (queue.length === 0) return
+  await update($, autopilotA, () => ({ rootId, queue, total: queue.length }))
+  await sendNextInOrder($)
+}
+
+async function sendNextInOrder($: EngineInterface) {
+  const ap = await read($, autopilotA)
+  if (!ap) return
+  const roots = await read($, rootsA)
+  const queue = [...ap.queue]
+  let step: Step | undefined
+  while (queue.length > 0 && !step) {
+    const hit = find(roots, queue.shift()!)
+    if (hit && hit.step.status !== 'done') step = hit.step
+  }
+  if (!step) {
+    await update($, autopilotA, () => null)
+    $.ui.toast(`upnext: ✓ ran all ${ap.total} steps in order`)
+    return
+  }
+  const current = step.id
+  await update($, autopilotA, a => (a ? { ...a, queue, current } : a))
+  await send($, openIds([step, ...allSteps(step.children)]), promptForStep(step))
+}
+
+async function stopInOrder($: EngineInterface, why?: string) {
+  if (!(await read($, autopilotA))) return
+  await update($, autopilotA, () => null)
+  if (why) $.ui.toast(`upnext: stopped running in order: ${why}`)
+}
+
+// ---- Your own steps: add and edit -------------------------------------------
+
+async function addStep($: EngineInterface, rootId: string | null, value: string) {
+  const text = clean(value, 300)
+  await update($, addingA, () => null)
+  if (text === '') return
+  const turn = await read($, turnA)
+  await changeRoots($, roots => {
+    const target = roots.find(r => r.id === (rootId ?? 'mine'))
+    if (!target) {
+      const root: Root = { id: 'mine', kind: 'mine', title: 'Your steps', turn, isCollapsed: false, steps: [] }
+      return [{ ...root, steps: [makeStep('mine', text)] }, ...roots].slice(0, MAX_ROOTS)
+    }
+    return roots.map(r => (r.id === target.id ? { ...r, isCollapsed: false, steps: [...r.steps, makeStep(r.id, text)] } : r))
+  })
+}
+
+const makeStep = (rootId: string, text: string): Step => ({
+  id: `${rootId}.u${uid()}`,
+  text,
+  prompt: plain(text),
+  status: 'open',
+  isCollapsed: false,
+  children: [],
+})
+
+async function saveEdit($: EngineInterface, id: string, value: string) {
+  const text = clean(value, 300)
+  await update($, editingA, () => null)
+  const hit = pathTo(await read($, rootsA), id)
+  if (!hit || text === '' || text === hit.step.text) return
+  const kind = hit.root.kind === 'tool' ? 'reply' : hit.root.kind
+  const prompt = promptFor(kind, text, hit.ancestors.map(a => a.text))
+  await changeRoots($, roots => mapAll(roots, s => (s.id === id ? { ...s, text, prompt } : s)))
+}
+
+// ---- Tidy: ask a fork which open steps are done or no longer relevant ----------
+
+async function tidy($: EngineInterface) {
+  if (await read($, tidyingA)) return
+  const open = (await read($, rootsA))
+    .flatMap(root => allSteps(root.steps).map(step => ({ root, step })))
+    .filter(({ step }) => step.status === 'open' || step.status === 'failed')
+    .slice(0, 40)
+  if (open.length === 0) {
+    $.ui.toast('upnext: no open steps to tidy')
+    return
+  }
+  await update($, tidyingA, () => true)
+  try {
+    const list = open.map(({ root, step }, i) => `${i + 1}. [${plain(root.title)}] ${plain(step.text)}`).join('\n')
+    const r = await $.model.fork({
+      effort: 'low',
+      prompt:
+        'Do not continue the task and do not use tools. Below are open next steps from this conversation. Using everything in the conversation so far, say which are already done, and which are no longer relevant (superseded, decided against, or about something that no longer exists). Be conservative: list a step only when the conversation clearly shows it; leave the rest out.\n\n' +
+        'Answer with ONLY JSON, no prose and no code fence: {"done":[numbers],"drop":[numbers]}\n\n' +
+        list,
+    })
+    if (!r.isAnswered) {
+      $.ui.toast(r.reason === 'nothing-to-fork' ? 'upnext: nothing to tidy against yet' : 'upnext: could not tidy (the model did not answer)')
+      return
+    }
+    const start = r.text.indexOf('{')
+    const end = r.text.lastIndexOf('}')
+    let data: { done?: unknown; drop?: unknown } = {}
+    try {
+      data = JSON.parse(r.text.slice(start, end + 1)) as typeof data
+    } catch {
+      $.ui.toast('upnext: could not tidy (unreadable answer)')
+      return
+    }
+    const pick = (v: unknown) =>
+      new Set((Array.isArray(v) ? v : []).flatMap(n => (typeof n === 'number' && open[n - 1] ? [open[n - 1]!.step.id] : [])))
+    const done = pick(data.done)
+    const drop = pick(data.drop)
+    await changeRoots($, roots =>
+      mapAll(roots, s => (drop.has(s.id) ? undefined : done.has(s.id) && s.status !== 'done' ? { ...s, status: 'done' } : s)),
+    )
+    $.ui.toast(
+      done.size + drop.size === 0
+        ? 'upnext: tidy found nothing to change'
+        : `upnext: tidied ${done.size} done, ${drop.size} removed`,
+    )
+  } catch (error) {
+    $.ui.toast(`upnext: could not tidy: ${String(error)}`)
+  } finally {
+    await update($, tidyingA, () => false)
   }
 }
 
@@ -693,8 +852,10 @@ export const register: Register = (on, options) => {
       ids = list.filter(f => f.turnId === e.turnId).flatMap(f => f.stepIds)
       return list.filter(f => f.turnId !== e.turnId)
     })
+    let verdict: StepStatus | undefined
     if (ids.length > 0) {
       const status: StepStatus = e.reason === 'aborted' ? 'open' : e.reason !== 'answer' || FAILED.test(answer) ? 'failed' : 'done'
+      verdict = status
       await changeRoots($, roots => setStatus(roots, ids, status))
     }
 
@@ -718,6 +879,13 @@ export const register: Register = (on, options) => {
     if (wantGroups || wantLikely || check.length > 0) {
       if (wantGroups || wantLikely) await update($, loadingA, () => turn)
       void modelPass($, { answer, turn, wantGroups, wantLikely, check, fallback: holdParsed ? parsed : [], commands })
+    }
+
+    // Running a group in order: on to the next step, or stop at one not done.
+    const ap = await read($, autopilotA)
+    if (ap?.current !== undefined && ids.includes(ap.current)) {
+      if (verdict === 'done') await sendNextInOrder($)
+      else await stopInOrder($, verdict === 'failed' ? 'a step was not finished' : 'the turn was interrupted')
     }
     return result
   })
@@ -811,9 +979,13 @@ export const register: Register = (on, options) => {
   // ---- The pane ------------------------------------------------------------
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Input } = $.ui.resolve(e)
     const roots = await read($, rootsA)
     const isLoading = (await read($, loadingA)) !== 0
+    const isTidying = await read($, tidyingA)
+    const ap = await read($, autopilotA)
+    const editing = await read($, editingA)
+    const adding = await read($, addingA)
     const cols = Math.max(24, e.props.bodyColumns)
     const steps = roots.flatMap(r => allSteps(r.steps))
     const done = steps.filter(s => s.status === 'done').length
@@ -826,6 +998,7 @@ export const register: Register = (on, options) => {
       tool: { glyph: '❯', color: 'bashBorder' },
       todo: { glyph: '☰', color: 'planMode' },
       likely: { glyph: '➜', color: 'remember' },
+      mine: { glyph: '✚', color: 'ide' },
     }
     const STATUS: Record<StepStatus, { glyph: string; color: string }> = {
       open: { glyph: '○', color: 'inactive' },
@@ -835,7 +1008,7 @@ export const register: Register = (on, options) => {
       failed: { glyph: '✗', color: 'error' },
     }
     // The second control on a row does what a click does not.
-    const alt = cfg.sendOnClick ? { glyph: '✎', color: 'suggestion' } : { glyph: '▶', color: 'success' }
+    const alt = cfg.sendOnClick ? { glyph: '⎘', color: 'suggestion' } : { glyph: '▶', color: 'success' }
 
     const rule = <Text dimColor>{'─'.repeat(cols)}</Text>
 
@@ -845,9 +1018,9 @@ export const register: Register = (on, options) => {
           <Text color="claude" bold>
             ✦ Up next
           </Text>
-          {isLoading ? (
+          {isLoading || isTidying ? (
             <Text color="claude" dimColor>
-              finding steps…
+              {isTidying ? 'tidying…' : 'finding steps…'}
             </Text>
           ) : (
             <Text dimColor>
@@ -855,7 +1028,26 @@ export const register: Register = (on, options) => {
             </Text>
           )}
         </Box>
+        {ap && (
+          <Box key="ap" flexDirection="row">
+            <Text color="success">▶▶ </Text>
+            <Text>
+              running in order · step {ap.total - ap.queue.length} of {ap.total}
+            </Text>
+            <Box flexGrow={1} />
+            <Button key="ap-stop" plain hotkey="s" hover={{ color: 'error' }} onPress={() => void stopInOrder($)}>
+              Stop
+            </Button>
+          </Box>
+        )}
         {rule}
+      </Box>
+    )
+
+    const addMine = (
+      <Box flexDirection="row">
+        <Text color="ide">✚ </Text>
+        <Input key="add-mine" placeholder="add your own step…" value="" submitLabel="add" onSubmit={v => void addStep($, null, v)} />
       </Box>
     )
 
@@ -869,13 +1061,14 @@ export const register: Register = (on, options) => {
             <Text dimColor>When a reply suggests next steps or</Text>
             <Text dimColor>offers to do more, they land here.</Text>
           </Box>
+          {addMine}
         </Box>
       )
     }
 
     // Hover cards: drawn last so they paint over the rows below their step,
     // placed by counting the rows drawn above. The terminal's cells are exact.
-    let y = 2
+    let y = ap ? 3 : 2
     const cards: JSX.Element[] = []
     const cardW = Math.min(cols - 4, 64)
     const card = (step: Step, root: Root, top: number) => {
@@ -923,7 +1116,7 @@ export const register: Register = (on, options) => {
         const isDone = step.status === 'done'
         // Tool output is only ever drafted, so it gets no send control.
         const hasAlt = !(root.kind === 'tool' && !cfg.sendOnClick)
-        const textW = cols - widthOf(first) - 2 - 2 - (hasAlt ? 5 : 3)
+        const textW = cols - widthOf(first) - 2 - 2 - (hasAlt ? 7 : 5)
         const lines = wrapRuns(runsOf(step.text), textW, 3)
         const body: (string | JSX.Element)[] = [<Text color={st.color}>{st.glyph}</Text>, ' ']
         lines.forEach((line, n) => {
@@ -942,6 +1135,20 @@ export const register: Register = (on, options) => {
             )
           }
         })
+        if (editing === step.id) {
+          y += 1
+          const editRow = (
+            <Box key={`s:${step.id}`} flexDirection="row">
+              <Text dimColor>{first}</Text>
+              <Input key={`edit:${step.id}`} value={step.text} submitLabel="save" onSubmit={v => void saveEdit($, step.id, v)} />
+              <Box flexGrow={1} />
+              <Button key={`ec:${step.id}`} plain dimColor hover={{ color: 'error' }} onPress={() => void update($, editingA, () => null)}>
+                ✕
+              </Button>
+            </Box>
+          )
+          return [editRow, ...(hasKids && !step.isCollapsed ? stepRows(root, step.children, [...guides, isLast]) : [])]
+        }
         y += lines.length
         const scope = hasCards ? card(step, root, y) : undefined
         const prefix = [first, ...lines.slice(1).map(() => more)].join('\n')
@@ -965,6 +1172,10 @@ export const register: Register = (on, options) => {
               </Button>
             )}
             {hasAlt && <Text> </Text>}
+            <Button key={`et:${step.id}`} plain dimColor hover={{ color: 'ide' }} onPress={() => void update($, editingA, () => step.id)}>
+              ✎
+            </Button>
+            <Text> </Text>
             <Button key={`x:${step.id}`} plain dimColor hover={{ color: 'error' }} onPress={() => void dismissStep($, step.id)}>
               ✕
             </Button>
@@ -988,8 +1199,10 @@ export const register: Register = (on, options) => {
       const kind = KIND[root.kind]
       const left = allSteps(root.steps).filter(isOpen).length
       const forAgents = agentSteps(root).length
+      const inOrder = orderSteps(root).length
+      const canAdd = root.kind !== 'tool' && root.kind !== 'likely'
       const meta = root.kind === 'todo' ? '' : root.turn > 0 ? ` · turn ${root.turn}` : root.kind === 'likely' ? ' · a guess' : ' · earlier'
-      const titleW = cols - 4 - 6 - widthOf(meta) - 8
+      const titleW = cols - 4 - widthOf(meta) - 6 - (canAdd ? 2 : 0) - (inOrder > 1 ? 3 : 0) - (forAgents > 1 ? 2 : 0) - 4
       const title = widthOf(root.title) > titleW ? root.title.slice(0, Math.max(4, titleW - 1)) + '…' : root.title
       const canSendAll = left > 0 && root.kind !== 'likely'
       y += (index === 0 ? 0 : 1) + 1
@@ -1006,6 +1219,18 @@ export const register: Register = (on, options) => {
             </Button>
             <Box flexGrow={1} />
             <Text color={left === 0 ? 'success' : kind.color}>{left === 0 ? '✓ ' : `${left} `}</Text>
+            {canAdd && (
+              <Button key={`add:${root.id}`} plain dimColor hover={{ color: 'ide' }} onPress={() => void update($, addingA, a => (a === root.id ? null : root.id))}>
+                +
+              </Button>
+            )}
+            {canAdd && <Text> </Text>}
+            {inOrder > 1 && !ap && (
+              <Button key={`seq:${root.id}`} plain dimColor hover={{ color: 'success' }} onPress={() => void startInOrder($, root.id)}>
+                ▶▶
+              </Button>
+            )}
+            {inOrder > 1 && !ap && <Text> </Text>}
             {forAgents > 1 && (
               <Button key={`bg:${root.id}`} plain dimColor hover={{ color: 'merged' }} onPress={() => void runInBackground($, root.id)}>
                 ⇶
@@ -1028,14 +1253,21 @@ export const register: Register = (on, options) => {
             </Text>
           )}
           {!root.isCollapsed && stepRows(root, root.steps, [])}
+          {adding === root.id && (
+            <Box key={`addrow:${root.id}`} flexDirection="row">
+              <Text dimColor> └─ </Text>
+              <Text color="ide">✚ </Text>
+              <Input key={`add-in:${root.id}`} placeholder="a new step…" value="" submitLabel="add" autoFocus onSubmit={v => void addStep($, root.id, v)} />
+            </Box>
+          )}
         </Box>
       )
     }
 
     const anyExpanded = roots.some(r => !r.isCollapsed)
     const hint = cfg.sendOnClick
-      ? 'click sends · ✎ edit first · ▶ send group · ⇶ background agents · ✕ dismiss'
-      : 'click drafts · ▶ send now · ⇶ background agents · ✕ dismiss'
+      ? 'click sends · ⎘ draft · ✎ edit · ▶▶ in order · ⇶ agents · ✕ dismiss'
+      : 'click drafts · ▶ send · ✎ edit · ▶▶ in order · ⇶ agents · ✕ dismiss'
 
     return (
       <Box flexDirection="column">
@@ -1052,10 +1284,14 @@ export const register: Register = (on, options) => {
                 Clear done
               </Button>
             )}
+            <Button key="tidy" plain hotkey="t" dimColor onPress={() => void tidy($)}>
+              Tidy
+            </Button>
             <Button key="clear-all" plain hotkey="x" dimColor onPress={() => void clearAll($)}>
               Clear all
             </Button>
           </Box>
+          {addMine}
           <Text dimColor>{hint}</Text>
         </Box>
         {cards}

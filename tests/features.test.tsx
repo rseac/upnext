@@ -208,3 +208,59 @@ test('/upnext export writes a checklist', async ($, on) => {
   expect(text).toContain('- [ ] Add tests')
   expect(text).toContain('- [x] Ship it')
 })
+
+test('▶▶ runs a group one step per turn, and stops at one not done', async ($, on) => {
+  const { sent } = engine(on)
+  await $.session.start({ cwd: '/proj-j', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, reason: 'answer', answer: '## Next steps\n- Add tests\n- Update the docs\n- Tag a release', turnId: 't1' })
+
+  const ui = await $.ui.mount(PANE)
+  const seq = await ui.find({ type: 'Button', text: /▶▶/ })
+  await ui.press({ key: seq!.key! })
+  expect(sent).toEqual(['Add tests'])
+  expect(await ui.find({ type: 'Text', text: /step 1 of 3/ })).toBeDefined()
+
+  await $.turn.start({ text: 'Add tests', turnId: 't2' })
+  await $.turn.complete({ ...TURN, reason: 'answer', answer: 'Added them.', turnId: 't2' })
+  expect(sent).toEqual(['Add tests', 'Update the docs'])
+
+  await $.turn.start({ text: 'Update the docs', turnId: 't3' })
+  await $.turn.complete({ ...TURN, reason: 'answer', answer: 'I could not find the docs folder.', turnId: 't3' })
+  expect(sent.length).toBe(2)
+  expect(await ui.find({ type: 'Text', text: /running in order/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Button', text: /Update the docs/ }))?.text).toContain('✗')
+  await ui.unmount()
+})
+
+test('you can add your own steps and edit any step', async ($, on) => {
+  const { drafted } = engine(on)
+  await $.session.start({ cwd: '/proj-k', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount(PANE)
+
+  await ui.input({ key: 'add-mine', text: 'Benchmark the parser' })
+  const row = await ui.find({ type: 'Button', text: /Benchmark the parser/ })
+  expect(row).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Your steps/ })).toBeDefined()
+
+  const id = row!.key!.replace('run:', '')
+  await ui.press({ key: `et:${id}` })
+  await ui.input({ key: `edit:${id}`, text: 'Benchmark the parser on large replies' })
+  const edited = await ui.find({ type: 'Button', text: /large replies/ })
+  await ui.press({ key: edited!.key! })
+  expect(drafted).toEqual(['Benchmark the parser on large replies'])
+  await ui.unmount()
+})
+
+test('Tidy marks done and removes steps the fork points at', async ($, on) => {
+  const { toasts } = engine(on, ['{"done":[1],"drop":[2]}'])
+  await $.session.start({ cwd: '/proj-l', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, reason: 'answer', answer: '## Next steps\n- Add tests\n- Port to Python\n- Tag a release', turnId: 't1' })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tidy' })
+  expect((await ui.find({ type: 'Button', text: /Add tests/ }))?.text).toContain('✓')
+  expect(await ui.find({ type: 'Button', text: /Port to Python/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Button', text: /Tag a release/ }))?.text).toContain('○')
+  expect(toasts[toasts.length - 1]).toContain('tidied 1 done, 1 removed')
+  await ui.unmount()
+})

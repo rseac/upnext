@@ -48,6 +48,11 @@ const CASES: { name: string; reply: string; want: (string | string[])[][] }[] = 
     want: [['Claude offered', ['Run `/code-review high` on the branch']]],
   },
   {
+    name: '"I could not…" is a report, not an offer',
+    reply: 'I could not find the docs folder. I can see it was moved in the last commit.',
+    want: [],
+  },
+  {
     name: 'a summary of changes is not a next step',
     reply: '## Changes\n- renamed `foo`\n- fixed the off-by-one\n\n## Testing\nAll 40 tests pass.',
     want: [],

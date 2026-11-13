@@ -65,12 +65,17 @@ Each turn adds a new group at the top and folds the older ones away. A step that
 | Click a step | Puts its prompt in the prompt box as a draft. Edit it, then press Enter. Its sub-steps go along with it. |
 | ▶ on a step | Sends it right away. |
 | ▶ on a group | Sends every open step in the group as one prompt. |
+| ▶▶ on a group | Runs the group in order, one step per turn. It moves on when a step is ✓ and stops at the first that isn't, or when you interrupt. A bar at the top shows progress, with Stop (`s`). |
+| + on a group | Adds your own step to that group. |
+| ✎ on a step | Edits its text in place. Enter saves; ✕ cancels. |
 | ⇶ on a group | Hands each open step (up to five) to its own background agent. Each step shows ⇶ while its agent works, then ✓ or ✗, with a toast. |
 | Hover a step | Shows the full prompt it will draft or send (terminal). |
 | `1` `2` `3` | From an empty prompt box: drafts that step from the row above the prompt. `0` hides the row until the next turn. |
 | Tab | Takes the top new step, shown as dim ghost text in the prompt box. |
 | ✕ | Dismisses the step or the group. |
 | ▾ / ▸ | Folds or unfolds. |
+| The field at the bottom | Adds your own step to a **Your steps** group. |
+| Tidy (`t`) | Asks a fork of the session which open steps are already done or no longer relevant, marks or removes them, and says what changed. Costs about one short reply per click. |
 | `z` / `c` / `x` | Fold all / clear done / clear all (while the pane has focus). |
 
 Steps found in Bash output are only ever drafted, never sent straight away (their group shows ✎ instead of ▶), since that output can come from anywhere.
@@ -96,7 +101,7 @@ Step text comes from replies and tool output, which can quote files and web page
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `clickAction` | `draft` | `send` makes a click send the step right away; ▶ then becomes ✎ (draft first). |
+| `clickAction` | `draft` | `send` makes a click send the step right away; ▶ then becomes ⎘ (draft first). |
 | `extractor` | `auto` | `auto`: read replies for free, and ask a fork of the session only when a reply lists nothing, or to check steps you ran. `heuristic`: never call a model. `model`: always ask the fork, which sees the whole conversation and reuses its prompt cache (about one short reply per turn). The pane shows "finding steps…" while it works. |
 | `minAnswerChars` | `80` | Replies shorter than this never trigger a model call. |
 | `band` | `true` | Shows the top three open steps above the prompt box. |

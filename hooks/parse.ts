@@ -223,7 +223,7 @@ export function parseSections(
 }
 
 const OFFER =
-  /^(?:(?:if you(?:'d| would) like|if you want|if helpful|optionally|alternatively|also|next)[, ]+)?(?:i can(?: also)?|i could(?: also)?|want me to|would you like me to|do you want me to|should i|shall i|i(?:'d| would) be happy to|happy to|let me know if you(?:'d| would) like me to|let me know if i should)\s+(.+?)\s*[?.!]*$/i
+  /^(?:(?:if you(?:'d| would) like|if you want|if helpful|optionally|alternatively|also|next)[, ]+)?(?:(?:i can|i could)(?: also)?(?!\s+(?:not|never|only|barely|see|tell)\b)|want me to|would you like me to|do you want me to|should i|shall i|i(?:'d| would) be happy to|happy to|let me know if you(?:'d| would) like me to|let me know if i should)\s+(.+?)\s*[?.!]*$/i
 const VERB =
   /^(?:add|run|write|create|update|fix|make|set|open|start|try|look|check|commit|push|refactor|remove|delete|build|deploy|move|rename|install|test|wire|draft|turn|go|show|change|split|merge|keep|use|switch|publish|share|review|explain|dig|investigate|clean|port|convert|extend|implement|also|then)\b/i
 
