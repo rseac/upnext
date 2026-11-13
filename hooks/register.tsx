@@ -195,8 +195,39 @@ function promptForStep(step: Step): string {
   return open.length > 0 ? `${step.prompt}\n\nThat includes:\n${bullets(open)}` : step.prompt
 }
 
+const EARLIER_NOTE = 'Check the current state of the code first: some of this may have changed or already be done.'
+
+/**
+ * A step from an earlier conversation, as a prompt that stands on its own: its
+ * text rather than a reply to an offer, the stream and the steps it sits under,
+ * and a note that it comes from before. Built when sent; never stored.
+ */
+function earlierPrompt(step: Step, root: Root, ancestors: Step[]): string {
+  const from = step.origin ?? root.kind
+  const command = commandOf(step.text)
+  if (command !== undefined && from !== 'tool') return command
+  const text = capital(plain(step.text))
+  const base = from === 'tool' ? step.prompt : /[.!?]$/.test(text) ? text : `${text}.`
+  const open = step.children.filter(isOpen)
+  const parts = [base]
+  if (open.length > 0) parts.push(`That includes:\n${bullets(open)}`)
+  const where = [plain(root.title), ...ancestors.map(a => plain(a.text).replace(/:$/, ''))].join(' › ')
+  parts.push(`(This step is from an earlier conversation, under "${where}". ${EARLIER_NOTE})`)
+  return parts.join('\n\n')
+}
+
+/** The prompt a click or ▶ sends for a step: self-contained when the step is from before. */
+function promptToSend(roots: Root[], id: string): string | undefined {
+  const hit = pathTo(roots, id)
+  if (!hit) return undefined
+  return hit.step.isEarlier === true ? earlierPrompt(hit.step, hit.root, hit.ancestors) : promptForStep(hit.step)
+}
+
 function promptForRoot(root: Root): string {
   const list = bullets(root.steps)
+  if (allSteps(root.steps).some(s => s.isEarlier === true && isOpen(s))) {
+    return `Please work through these next steps (${plain(root.title)}), from an earlier conversation. ${EARLIER_NOTE}\n${list}`
+  }
   switch (root.kind) {
     case 'offer':
       return `Yes, please do all of these:\n${list}`
@@ -506,7 +537,7 @@ async function restore($: EngineInterface) {
       title: clean(r.title, 80),
       turn: 0,
       isCollapsed: true,
-      steps: mapSteps(r.steps, s => ({ ...s, text: clean(s.text), prompt: clean(s.prompt, 4000), status: 'open' })),
+      steps: mapSteps(r.steps, s => ({ ...s, text: clean(s.text), prompt: clean(s.prompt, 4000), status: 'open', isEarlier: true })),
     })),
   )
 }
@@ -551,11 +582,12 @@ const openIds = (steps: Step[]) => steps.filter(isOpen).map(s => s.id)
 
 /** `how`: 'send' sends now, 'draft' fills the prompt box. Tool output is always drafted. */
 async function actOnStep($: EngineInterface, id: string, how: 'send' | 'draft') {
-  const hit = find(await read($, rootsA), id)
+  const roots = await read($, rootsA)
+  const hit = find(roots, id)
   if (!hit) return
   const ids = openIds([hit.step, ...allSteps(hit.step.children)])
   const stepIds = ids.length > 0 ? ids : [hit.step.id]
-  const prompt = promptForStep(hit.step)
+  const prompt = promptToSend(roots, id) ?? promptForStep(hit.step)
   if (how === 'send' && hit.root.kind !== 'tool') await send($, stepIds, prompt)
   else await draft($, stepIds, prompt)
 }
@@ -582,11 +614,12 @@ const AGENT_NOTE =
   '\n\nYou are one of several background agents, each working on one step of the same plan in this repository. Keep your changes to this step, and end with one line saying whether it is done.'
 
 async function runInBackground($: EngineInterface, rootId: string) {
-  const root = (await read($, rootsA)).find(r => r.id === rootId)
+  const roots = await read($, rootsA)
+  const root = roots.find(r => r.id === rootId)
   if (!root) return
   for (const step of agentSteps(root)) {
     try {
-      const r = await $.agent.spawn({ prompt: promptForStep(step) + AGENT_NOTE, description: plain(step.text).slice(0, 60) })
+      const r = await $.agent.spawn({ prompt: (promptToSend(roots, step.id) ?? promptForStep(step)) + AGENT_NOTE, description: plain(step.text).slice(0, 60) })
       if (r.deny !== undefined || r.agentId === undefined) {
         $.ui.toast(`upnext: could not start an agent${r.deny ? `: ${r.deny}` : ''}`)
         continue
@@ -804,7 +837,7 @@ async function sendNextInOrder($: EngineInterface) {
   }
   const current = step.id
   await update($, autopilotA, a => (a ? { ...a, queue, current } : a))
-  await send($, openIds([step, ...allSteps(step.children)]), promptForStep(step))
+  await send($, openIds([step, ...allSteps(step.children)]), promptToSend(roots, step.id) ?? promptForStep(step))
 }
 
 async function stopInOrder($: EngineInterface, why?: string) {
@@ -993,6 +1026,28 @@ async function setListRoot($: EngineInterface, id: string, title: string, steps:
 const listStep = (id: string, text: string, status: StepStatus): Step | undefined => {
   const t = clean(text, 300)
   return t === '' ? undefined : { id, text: t, prompt: promptFor('todo', t, []), status, isCollapsed: false, children: [] }
+}
+
+// ---- A /clear: what was in flight stops, and every step becomes "earlier" ----
+
+/** After a /clear: fold and mark every step earlier; nothing waits on the old conversation. */
+async function afterClear($: EngineInterface) {
+  await update($, autopilotA, () => null)
+  await update($, inflightA, () => [])
+  await update($, pendingA, () => [])
+  await update($, loadingA, () => 0)
+  await changeRoots($, roots =>
+    roots.map(r => ({
+      ...r,
+      isCollapsed: true,
+      steps: mapSteps(r.steps, s => ({
+        ...s,
+        isEarlier: true,
+        // A background agent may still finish; anything else in flight is open again.
+        status: s.agentId === undefined && (s.status === 'queued' || s.status === 'running') ? 'open' : s.status,
+      })),
+    })),
+  )
 }
 
 // ---- herdr: a viewer in a herdr pane beside Claude, and a count on Claude's pane ----
@@ -1286,6 +1341,11 @@ export const register: Register = (on, options) => {
   })
 
   on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') {
+      // The process goes on with a fresh conversation, and no session.start.
+      await afterClear($)
+      return next(e)
+    }
     if (herdr.pane !== '' && herdr.label) await herdrLabel($, '')
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -1297,6 +1357,9 @@ export const register: Register = (on, options) => {
 
   // A turn has started: if it is a step's (sent from the pane, or typed), mark it running.
   on('turn.start', async ($, e, next) => {
+    // If a /clear also emptied this session's values, bring the saved steps back
+    // before anything new is saved over them.
+    if (e.agentId === undefined && keepAcrossSessions) await restore($)
     if (e.agentId === undefined) {
       const text = e.text.trim()
       let ids: string[] = []
@@ -1600,7 +1663,7 @@ export const register: Register = (on, options) => {
           : cfg.sendOnClick
             ? 'click sends, ✎ drafts this prompt:'
             : 'click drafts, ▶ sends this prompt:'
-      const lines = promptForStep(step)
+      const lines = (promptToSend(roots, step.id) ?? promptForStep(step))
         .split('\n')
         .flatMap(l => (l.trim() === '' ? [[{ text: '', style: 'plain' as const }]] : wrapRuns([{ text: l, style: 'plain' }], cardW - 4, 8)))
         .slice(0, 10)
@@ -1740,7 +1803,9 @@ export const register: Register = (on, options) => {
       const forAgents = agentSteps(root).length
       const inOrder = orderSteps(root).length
       const canAdd = root.kind !== 'tool' && root.kind !== 'likely'
-      const meta = root.kind === 'todo' ? '' : root.turn > 0 ? ` · turn ${root.turn}` : root.kind === 'likely' ? ' · a guess' : ' · earlier'
+      const isEarlier = root.steps.length > 0 && allSteps(root.steps).every(s => s.isEarlier === true)
+      const meta =
+        root.kind === 'todo' ? '' : isEarlier ? ' · earlier' : root.turn > 0 ? ` · turn ${root.turn}` : root.kind === 'likely' ? ' · a guess' : ' · earlier'
       const titleW = cols - 4 - widthOf(meta) - 6 - (root.kind === 'stream' ? (focus ? 4 : 6) : 0) - (canAdd ? 2 : 0) - (inOrder > 1 ? 3 : 0) - (forAgents > 1 ? 2 : 0) - 4
       const title = widthOf(root.title) > titleW ? root.title.slice(0, Math.max(4, titleW - 1)) + '…' : root.title
       const canSendAll = left > 0 && root.kind !== 'likely'

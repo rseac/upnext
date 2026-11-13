@@ -152,6 +152,8 @@ When a step's turn ends, it gets ✓, or ✗ if the reply says it couldn't finis
 
 Open steps are saved per project folder. The next session there brings them back, folded and marked "earlier". The status line shows how many are open.
 
+**After `/clear`, or in a new session**, steps from before are folded and marked "earlier". The pane shows them exactly as before, but clicking one builds a prompt that stands on its own: the step itself instead of "Yes, please…", the stream it belongs to, and a note to check the code first, since some of it may be done. That wording is put together when you click and never stored. `/clear` also puts queued and running steps back to open and stops a run in order. Background agents (⇶) are left to finish.
+
 | Command | What it does |
 | --- | --- |
 | `/upnext` | Opens the pane. If you closed it, it stays closed until you run this again. |

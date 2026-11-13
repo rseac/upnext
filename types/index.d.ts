@@ -14,6 +14,11 @@ export type Step = {
   origin?: RootKind
   /** The turn it arrived in, to mark new steps. */
   addedTurn?: number
+  /**
+   * From an earlier conversation (before a /clear, or a previous session):
+   * its prompt is made self-contained when it is sent, not stored that way.
+   */
+  isEarlier?: boolean
 }
 
 /** Where a group of steps came from. */
