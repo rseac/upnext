@@ -773,22 +773,24 @@ def popup_paths():
     folder = os.path.expanduser("~/.claude/upnext/herdr")
     pane = None
     try:
+        # herdr names the pane under the popup "focused_pane_id" (v0.9).
         ctx = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}")
-        stack = [ctx]
-        while stack and pane is None:
-            item = stack.pop()
-            if isinstance(item, dict):
-                if isinstance(item.get("pane_id"), str):
-                    pane = item["pane_id"]
-                stack.extend(item.values())
-            elif isinstance(item, list):
-                stack.extend(item)
+        for key in ("focused_pane_id", "pane_id"):
+            if isinstance(ctx, dict) and isinstance(ctx.get(key), str):
+                pane = ctx[key]
+                break
     except ValueError:
         pane = None
     fid = lambda p: "".join(c if c.isalnum() or c in "_-" else "-" for c in p)
     if pane and os.path.exists(os.path.join(folder, fid(pane) + ".json")):
         base = os.path.join(folder, fid(pane))
         return [base + ".json", base + ".actions"]
+    try:
+        # What herdr told the popup, to see why it found no list.
+        with open(os.path.join(folder, "popup-context.json"), "w", encoding="utf-8") as f:
+            f.write(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "")
+    except OSError:
+        pass
     return None
 
 
