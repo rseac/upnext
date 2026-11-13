@@ -3,14 +3,18 @@
 An **Up next** pane beside the transcript that collects the next steps Claude suggests and shows them as a tree you can act on.
 
 ```
-✦ Up next                       3 open · 1 done
-──────────────────────────────────────────────
-▾ ✦ Next steps · turn 4                 2 ▶ ✕
- ├─ ▾ ○ Add unit tests for the parser     ▶ ✕
- │  └─  ✓ cover nested lists               ▶ ✕
- └─   ○ Update the README                 ▶ ✕
+✦ Up next                               5 open · 1 done
+───────────────────────────────────────────────────────
+▾ ⬢ Auth · turn 9                 3 ✎ + ▶▶ ⇶ ▶ ✕
+ ├─ ○ Move token check into middleware   ▶ ✎ ✕
+ ├─ ○ Add expiry tests •                 ▶ ✎ ✕
+ └─ ✓ Remove the old session table       ▶ ✎ ✕
 
-▸ ◇ Claude offered · turn 3             2 ▶ ✕
+▾ ⬢ Docs · turn 8                 2 ✎ + ▶▶ ⇶ ▶ ✕
+ ├─ ○ Document the new flags             ▶ ✎ ✕
+ └─ ○ Fix broken links in README         ▶ ✎ ✕
+
+▸ ☰ Todo list                                  1 ✕
 ```
 
 The top three open steps also sit in a row above the prompt box:
@@ -57,6 +61,22 @@ A step can be a slash command, like `/code-review high`. Steps naming a command 
 Checked boxes (`- [x]`) arrive already done, and tables of steps are read by their first column.
 
 Each turn adds a new group at the top and folds the older ones away. A step that is already open is not added twice.
+
+## Streams
+
+Each line of work gets its own **stream** (⬢), kept across turns:
+
+- **Sorting:** new steps from a reply join the stream they belong to. A matching heading ("Docs follow-ups" → **Docs**) or enough shared words decide it. When a fork is reading the reply anyway, it picks the stream by name.
+- **New streams:** a group about something new starts its own stream, named after its heading or first step.
+- **Within a stream:** a step that is close enough to one already there is not added again. Steps new this turn get a small •.
+- **Order:** streams that got steps move to the top. The others stay where they are and keep their own folding.
+- **Fixing it up:**
+  - ✎ on a stream renames it, and offers **merge into → another stream**.
+  - ✎ on a step offers **move to → another stream** or **→ new stream**.
+- **Above the prompt:** the 1/2/3 row shows the top step of each stream first.
+- **Not streams:** Bash hints, the todo list and "Likely next" guesses stay as their own groups.
+
+▶▶ and ⇶ work per stream. Only one stream can run in order at a time, since it uses the main conversation, but background agents can work on other streams meanwhile.
 
 ## Using it
 

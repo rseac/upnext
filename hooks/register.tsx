@@ -71,6 +71,7 @@ function promptFor(kind: RootKind, text: string, ancestors: string[], source?: s
       return source ? `${t}\n\n(Suggested by the output of \`${source}\`.)` : t
     case 'likely':
     case 'mine':
+    case 'stream':
       return t
     case 'reply':
       return ancestors.length > 0 ? `${t}\n\n(This is part of: ${ancestors.map(plain).join(' › ')}.)` : t
@@ -86,14 +87,20 @@ function toSteps(kind: RootKind, parsed: ParsedStep[], base: string, ancestors: 
       prompt: promptFor(kind, p.text, ancestors, source),
       status: p.isDone === true ? 'done' : 'open',
       isCollapsed: false,
+      origin: kind,
       children: toSteps(kind, p.children, id, [...ancestors, p.text], source),
     }
   })
 }
 
-function toRoot(p: ParsedRoot, turn: number, source?: string): Root {
+/** A group on its way into the tree; `streamHint` is the model's choice of stream. */
+type Incoming = Root & { streamHint?: string }
+
+function toRoot(p: ParsedRoot, turn: number, source?: string): Incoming {
   const id = uid()
-  return { id, kind: p.kind, title: p.title, source, turn, isCollapsed: false, steps: toSteps(p.kind, p.steps, id, [], source) }
+  const root: Incoming = { id, kind: p.kind, title: p.title, source, turn, isCollapsed: false, steps: toSteps(p.kind, p.steps, id, [], source) }
+  if (p.stream !== undefined) root.streamHint = p.stream
+  return root
 }
 
 const allSteps = (steps: Step[]): Step[] => steps.flatMap(s => [s, ...allSteps(s.children)])
@@ -162,21 +169,24 @@ function promptForRoot(root: Root): string {
 }
 
 /** Steps of `incoming` already open somewhere in `existing` are dropped. */
-function dedupe(existing: Root[], incoming: Root[]): Root[] {
+function dedupe<R extends Root>(existing: Root[], incoming: R[]): R[] {
   const open = new Set(existing.flatMap(r => allSteps(r.steps)).filter(isOpen).map(s => keyOf(s.text)))
-  return mapAll(incoming, s => (s.children.length === 0 && open.has(keyOf(s.text)) ? undefined : s))
+  return incoming
+    .map(r => ({ ...r, steps: mapSteps(r.steps, s => (s.children.length === 0 && open.has(keyOf(s.text)) ? undefined : s)) }))
+    .filter(r => r.steps.length > 0)
 }
 
 /** Open top-level steps, newest group first: what the band and ghost text offer. */
 function topSteps(roots: Root[], n: number): { root: Root; step: Step }[] {
-  const out: { root: Root; step: Step }[] = []
+  const firsts: { root: Root; step: Step }[] = []
+  const rest: { root: Root; step: Step }[] = []
   for (const root of roots) {
-    for (const step of root.steps) {
-      if (step.status === 'open') out.push({ root, step })
-      if (out.length >= n) return out
-    }
+    root.steps
+      .filter(s => s.status === 'open')
+      .forEach((step, i) => (i === 0 ? firsts : rest).push({ root, step }))
   }
-  return out
+  // The top step of each stream first, then the rest in order.
+  return [...firsts, ...rest].slice(0, n)
 }
 
 const setStatus = (roots: Root[], ids: string[], status: StepStatus) =>
@@ -253,6 +263,8 @@ type Job = {
   check: Step[]
   fallback: ParsedRoot[]
   commands: CommandInfo[] | null
+  /** Names of the streams in the tree, for the model to file groups under. */
+  streams: string[]
 }
 
 function forkPrompt(job: Job): string {
@@ -261,6 +273,13 @@ function forkPrompt(job: Job): string {
     'Answer with ONLY JSON, no prose and no code fence, in this shape:',
     '{"groups":[{"title":"short heading","steps":[{"text":"imperative action, under 100 characters","children":[]}]}],"likely":[{"text":"..."}],"outcomes":[{"n":1,"done":true}]}',
   ]
+  if (job.wantGroups && job.streams.length > 0) {
+    parts.push(
+      `Each group may also carry "stream": the line of work it continues. Use one of these names exactly when it fits, otherwise a new short topic name (2 to 4 words): ${job.streams.map(n => JSON.stringify(n)).join(', ')}.`,
+    )
+  } else if (job.wantGroups) {
+    parts.push('Each group may also carry "stream": a short topic name (2 to 4 words) for the line of work it belongs to.')
+  }
   parts.push(
     job.wantGroups
       ? '"groups": the concrete next steps your last reply suggests, recommends or offers to do, as a tree. Keep its own grouping and nesting; otherwise one group titled "Next steps". Skip summaries of work already done and questions about preferences. Name the actual files, tests or commands; keep inline code in backticks. [] if there are none.'
@@ -309,12 +328,17 @@ function fromModel(text: string): ForkAnswer | undefined {
           .map(s => ({ text: typeof s?.text === 'string' ? clean(s.text, 300) : '', children: steps(s?.children, depth + 1) }))
           .filter(s => s.text !== '')
           .slice(0, 20)
-  const groups = (Array.isArray(data.groups) ? (data.groups as { title?: unknown; steps?: unknown }[]) : [])
-    .map(g => ({
-      kind: 'reply' as const,
-      title: (typeof g?.title === 'string' ? clean(g.title, 80) : '') || GROUP_TITLE,
-      steps: steps(g?.steps, 0),
-    }))
+  const groups = (Array.isArray(data.groups) ? (data.groups as { title?: unknown; steps?: unknown; stream?: unknown }[]) : [])
+    .map(g => {
+      const group: ParsedRoot = {
+        kind: 'reply',
+        title: (typeof g?.title === 'string' ? clean(g.title, 80) : '') || GROUP_TITLE,
+        steps: steps(g?.steps, 0),
+      }
+      const stream = typeof g?.stream === 'string' ? clean(g.stream, 40) : ''
+      if (stream !== '') group.stream = stream
+      return group
+    })
     .filter(g => g.steps.length > 0)
   const outcomes = new Map<number, boolean>()
   for (const o of Array.isArray(data.outcomes) ? (data.outcomes as { n?: unknown; done?: unknown }[]) : []) {
@@ -401,7 +425,7 @@ function isRoots(v: unknown): v is Root[] {
         r !== null &&
         typeof (r as Root).id === 'string' &&
         typeof (r as Root).title === 'string' &&
-        ['reply', 'offer', 'tool', 'mine'].includes((r as Root).kind) &&
+        ['reply', 'offer', 'tool', 'mine', 'stream'].includes((r as Root).kind) &&
         Array.isArray((r as Root).steps) &&
         (r as Root).steps.every(s => isStep(s)),
     )
@@ -561,19 +585,125 @@ const foldAll = ($: EngineInterface) =>
     return roots.map(r => ({ ...r, isCollapsed: anyOpen }))
   })
 
-async function addRoots($: EngineInterface, incoming: Root[]) {
-  let fresh: Root[] = []
+// ---- Streams: one top-level group per line of work ---------------------------
+
+// Words that say "these are next steps" rather than what they are about.
+const FILLER = new Set(
+  'next step steps up whats what suggested suggest suggestions follow ups followups follow-ups claude offered recommendations recommended recommend ideas idea options remaining left todo todos to-do heres here i\'d id can could might may also you your for the a an to on of and some possible further work items action open more other things still do with this that these then before after now'.split(' '),
+)
+
+/** What a group's heading says it is about ("Docs follow-ups" → "Docs"), or ''. */
+function topicOf(title: string): string {
+  const kept = plain(title)
+    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
+    .split(/\s+/)
+    .filter(w => w !== '')
+  // Trim filler from both ends only, so "From the fork" keeps its middle.
+  const isFiller = (w: string) => FILLER.has(w.toLowerCase().replace(/[’']/g, ''))
+  while (kept.length > 0 && isFiller(kept[0]!)) kept.shift()
+  while (kept.length > 0 && isFiller(kept[kept.length - 1]!)) kept.pop()
+  return kept.join(' ').slice(0, 40)
+}
+
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+
+/** A name for a new stream: the heading's topic, else the first step's opening words. */
+function nameFor(group: Root): string {
+  const topic = topicOf(group.title)
+  if (topic !== '') return capital(topic)
+  const first = plain(group.steps[0]?.text ?? '').replace(/`/g, '').split(/\s+/).slice(0, 4)
+  while (first.length > 1 && FILLER.has(first[first.length - 1]!.toLowerCase())) first.pop()
+  return capital(first.join(' ')) || 'Next steps'
+}
+
+const streamWords = (r: Root) => words([r.title, ...allSteps(r.steps).map(s => s.text)].join(' '))
+
+/** The stream a group continues: the model's pick, the same topic, or enough shared words. */
+function streamFor(streams: Root[], group: Incoming): Root | undefined {
+  const byName = (name: string) => streams.find(s => s.title.toLowerCase() === name.toLowerCase())
+  if (group.streamHint) return byName(group.streamHint)
+  const topic = topicOf(group.title)
+  if (topic !== '' && byName(topic)) return byName(topic)
+  const mine = streamWords(group)
+  let best: { root: Root; score: number } | undefined
+  for (const stream of streams) {
+    if (stream.id === 'mine') continue
+    const theirs = streamWords(stream)
+    const smaller = Math.min(mine.size, theirs.size)
+    if (smaller < 3) continue
+    let shared = 0
+    for (const w of mine) if (theirs.has(w)) shared += 1
+    const score = shared / smaller
+    if (score >= 0.34 && (!best || score > best.score)) best = { root: stream, score }
+  }
+  return best?.root
+}
+
+/** Close enough to a step already in the stream to be the same step. */
+function isSameStep(a: Step, b: Step): boolean {
+  if (keyOf(a.text) === keyOf(b.text)) return true
+  const x = words(a.text)
+  const y = words(b.text)
+  if (x.size < 3 || y.size < 3) return false
+  let shared = 0
+  for (const w of x) if (y.has(w)) shared += 1
+  return shared / (x.size + y.size - shared) >= 0.7
+}
+
+const isStreamKind = (k: RootKind) => k === 'reply' || k === 'offer' || k === 'mine' || k === 'stream'
+
+/**
+ * Puts each incoming reply or offer group into its stream (new or existing),
+ * and the rest (tool hints, guesses) at the top as groups of their own.
+ * Streams that got steps move to the top; the others keep their place.
+ */
+function mergeIncoming(roots: Root[], incoming: Incoming[], turn: number): { roots: Root[]; added: number } {
+  // Earlier guesses at what comes next give way to anything new.
+  let list = incoming.length > 0 ? roots.filter(r => r.kind !== 'likely') : roots
+  const touched: string[] = []
+  const loose: Incoming[] = []
+  let added = 0
+  for (const group of incoming) {
+    if (!isStreamKind(group.kind)) {
+      loose.push(group)
+      added += 1
+      continue
+    }
+    const streams = list.filter(r => r.kind === 'stream')
+    const target = streamFor(streams, group)
+    const existing = target ? allSteps(target.steps) : []
+    const fresh = group.steps
+      .filter(s => !existing.some(e => e.status !== 'done' && isSameStep(e, s)))
+      .map(s => ({ ...s, addedTurn: turn }))
+    if (fresh.length === 0) continue
+    added += fresh.length
+    if (target) {
+      list = list.map(r => (r.id === target.id ? { ...r, turn, isCollapsed: false, steps: [...r.steps, ...fresh] } : r))
+      touched.push(target.id)
+    } else {
+      const title = group.streamHint ?? nameFor(group)
+      const stream: Root = { id: uid(), kind: 'stream', title, turn, isCollapsed: false, steps: fresh }
+      list = [stream, ...list]
+      touched.push(stream.id)
+    }
+  }
+  const top = touched.flatMap(id => list.filter(r => r.id === id))
+  const others = list
+    .filter(r => !touched.includes(r.id))
+    .map(r => (r.kind === 'tool' && loose.length > 0 ? { ...r, isCollapsed: true } : r))
+  const uniqueTop = top.filter((r, i) => top.findIndex(t => t.id === r.id) === i)
+  return { roots: [...uniqueTop, ...loose.map(({ streamHint: _h, ...r }) => r), ...others].slice(0, MAX_ROOTS), added }
+}
+
+async function addRoots($: EngineInterface, incoming: Incoming[]) {
+  const turn = await read($, turnA)
+  let added = 0
   const roots = await changeRoots($, roots => {
-    fresh = dedupe(roots, incoming)
-    if (fresh.length === 0) return roots
-    // Newest first. Earlier groups fold away, todo and task lists stay as they
-    // are, and earlier guesses at what comes next are dropped.
-    const older = roots
-      .filter(r => r.kind !== 'likely')
-      .map(r => (r.kind === 'todo' || r.kind === 'mine' ? r : { ...r, isCollapsed: true }))
-    return [...fresh, ...older].slice(0, MAX_ROOTS)
+    const merged = mergeIncoming(roots, dedupe(roots, incoming), turn)
+    added = merged.added
+    return added === 0 ? roots : merged.roots
   })
-  if (fresh.length === 0) return
+  if (added === 0) return
   if (cfg.autoOpen && !(await read($, closedA))) await $.ui.open({ id: PANE, title: TITLE })
   if (cfg.ghostText) {
     // The top step, as dim text in the prompt box: Tab takes it as a draft.
@@ -636,7 +766,7 @@ async function addStep($: EngineInterface, rootId: string | null, value: string)
   await changeRoots($, roots => {
     const target = roots.find(r => r.id === (rootId ?? 'mine'))
     if (!target) {
-      const root: Root = { id: 'mine', kind: 'mine', title: 'Your steps', turn, isCollapsed: false, steps: [] }
+      const root: Root = { id: 'mine', kind: 'stream', title: 'Your steps', turn, isCollapsed: false, steps: [] }
       return [{ ...root, steps: [makeStep('mine', text)] }, ...roots].slice(0, MAX_ROOTS)
     }
     return roots.map(r => (r.id === target.id ? { ...r, isCollapsed: false, steps: [...r.steps, makeStep(r.id, text)] } : r))
@@ -649,17 +779,51 @@ const makeStep = (rootId: string, text: string): Step => ({
   prompt: plain(text),
   status: 'open',
   isCollapsed: false,
+  origin: 'mine',
   children: [],
 })
 
 async function saveEdit($: EngineInterface, id: string, value: string) {
   const text = clean(value, 300)
   await update($, editingA, () => null)
-  const hit = pathTo(await read($, rootsA), id)
+  const roots = await read($, rootsA)
+  if (roots.some(r => r.id === id)) {
+    if (text !== '') await changeRoots($, rs => rs.map(r => (r.id === id ? { ...r, title: text.slice(0, 60) } : r)))
+    return
+  }
+  const hit = pathTo(roots, id)
   if (!hit || text === '' || text === hit.step.text) return
-  const kind = hit.root.kind === 'tool' ? 'reply' : hit.root.kind
+  const from = hit.step.origin ?? hit.root.kind
+  const kind = from === 'tool' || from === 'stream' ? 'reply' : from
   const prompt = promptFor(kind, text, hit.ancestors.map(a => a.text))
   await changeRoots($, roots => mapAll(roots, s => (s.id === id ? { ...s, text, prompt } : s)))
+}
+
+/** Moves a step (with its sub-steps) to another stream, or to a new one when `to` is null. */
+async function moveStep($: EngineInterface, id: string, to: string | null) {
+  await update($, editingA, () => null)
+  const hit = pathTo(await read($, rootsA), id)
+  if (!hit) return
+  const step = hit.step
+  const turn = await read($, turnA)
+  await changeRoots($, roots => {
+    const without = mapAll(roots, s => (s.id === id ? undefined : s))
+    if (to === null) {
+      const title = nameFor({ ...hit.root, title: '', steps: [step] })
+      return [{ id: uid(), kind: 'stream', title, turn, isCollapsed: false, steps: [step] }, ...without]
+    }
+    return without.map(r => (r.id === to ? { ...r, isCollapsed: false, steps: [...r.steps, step] } : r))
+  })
+}
+
+/** Merges one stream into another: its steps join the other's end. */
+async function mergeStreams($: EngineInterface, from: string, into: string) {
+  await update($, editingA, () => null)
+  await changeRoots($, roots => {
+    const source = roots.find(r => r.id === from)
+    if (!source) return roots
+    return roots.filter(r => r.id !== from).map(r => (r.id === into ? { ...r, isCollapsed: false, steps: [...r.steps, ...source.steps] } : r))
+  })
 }
 
 // ---- Tidy: ask a fork which open steps are done or no longer relevant ----------
@@ -878,7 +1042,8 @@ export const register: Register = (on, options) => {
 
     if (wantGroups || wantLikely || check.length > 0) {
       if (wantGroups || wantLikely) await update($, loadingA, () => turn)
-      void modelPass($, { answer, turn, wantGroups, wantLikely, check, fallback: holdParsed ? parsed : [], commands })
+      const streams = roots.filter(r => r.kind === 'stream').map(r => r.title)
+      void modelPass($, { answer, turn, wantGroups, wantLikely, check, fallback: holdParsed ? parsed : [], commands, streams })
     }
 
     // Running a group in order: on to the next step, or stop at one not done.
@@ -986,6 +1151,8 @@ export const register: Register = (on, options) => {
     const ap = await read($, autopilotA)
     const editing = await read($, editingA)
     const adding = await read($, addingA)
+    const turnNow = await read($, turnA)
+    const streams = roots.filter(r => r.kind === 'stream')
     const cols = Math.max(24, e.props.bodyColumns)
     const steps = roots.flatMap(r => allSteps(r.steps))
     const done = steps.filter(s => s.status === 'done').length
@@ -999,6 +1166,7 @@ export const register: Register = (on, options) => {
       todo: { glyph: '☰', color: 'planMode' },
       likely: { glyph: '➜', color: 'remember' },
       mine: { glyph: '✚', color: 'ide' },
+      stream: { glyph: '⬢', color: 'claude' },
     }
     const STATUS: Record<StepStatus, { glyph: string; color: string }> = {
       open: { glyph: '○', color: 'inactive' },
@@ -1147,10 +1315,28 @@ export const register: Register = (on, options) => {
               </Button>
             </Box>
           )
-          return [editRow, ...(hasKids && !step.isCollapsed ? stepRows(root, step.children, [...guides, isLast]) : [])]
+          const targets = root.kind === 'tool' || root.kind === 'todo' ? [] : streams.filter(t => t.id !== root.id).slice(0, 4)
+          const moveRow = root.kind === 'tool' || root.kind === 'todo' ? null : (
+            <Box key={`mv:${step.id}`} flexDirection="row" flexWrap="wrap" columnGap={1}>
+              <Text dimColor>{more} move to</Text>
+              {targets.map(t => (
+                <Button key={`mv:${step.id}:${t.id}`} plain dimColor hover={{ color: 'claude' }} onPress={() => void moveStep($, step.id, t.id)}>
+                  {`→ ${plain(t.title).slice(0, 20)}`}
+                </Button>
+              ))}
+              <Button key={`mv:${step.id}:new`} plain dimColor hover={{ color: 'claude' }} onPress={() => void moveStep($, step.id, null)}>
+                → new stream
+              </Button>
+            </Box>
+          )
+          if (moveRow) y += 1
+          return [editRow, ...(moveRow ? [moveRow] : []), ...(hasKids && !step.isCollapsed ? stepRows(root, step.children, [...guides, isLast]) : [])]
         }
         y += lines.length
         const scope = hasCards ? card(step, root, y) : undefined
+        if (step.addedTurn !== undefined && step.addedTurn === turnNow && step.status === 'open' && root.kind === 'stream') {
+          body.push(<Text color="claude"> •</Text>)
+        }
         const prefix = [first, ...lines.slice(1).map(() => more)].join('\n')
         const row = (
           <Box key={`s:${step.id}`} flexDirection="row" alignItems="flex-start" hover={scope ? { scope } : undefined}>
@@ -1202,12 +1388,39 @@ export const register: Register = (on, options) => {
       const inOrder = orderSteps(root).length
       const canAdd = root.kind !== 'tool' && root.kind !== 'likely'
       const meta = root.kind === 'todo' ? '' : root.turn > 0 ? ` · turn ${root.turn}` : root.kind === 'likely' ? ' · a guess' : ' · earlier'
-      const titleW = cols - 4 - widthOf(meta) - 6 - (canAdd ? 2 : 0) - (inOrder > 1 ? 3 : 0) - (forAgents > 1 ? 2 : 0) - 4
+      const titleW = cols - 4 - widthOf(meta) - 6 - (root.kind === 'stream' ? 2 : 0) - (canAdd ? 2 : 0) - (inOrder > 1 ? 3 : 0) - (forAgents > 1 ? 2 : 0) - 4
       const title = widthOf(root.title) > titleW ? root.title.slice(0, Math.max(4, titleW - 1)) + '…' : root.title
       const canSendAll = left > 0 && root.kind !== 'likely'
       y += (index === 0 ? 0 : 1) + 1
       const showSource = root.source !== undefined && !root.isCollapsed
       if (showSource) y += 1
+      if (editing === root.id) {
+        const others = streams.filter(t => t.id !== root.id).slice(0, 4)
+        y += others.length > 0 ? 1 : 0
+        return (
+          <Box flexDirection="column" marginTop={index === 0 ? 0 : 1}>
+            <Box key={`r:${root.id}`} flexDirection="row">
+              <Text color={kind.color}>{kind.glyph} </Text>
+              <Input key={`edit:${root.id}`} value={root.title} submitLabel="rename" onSubmit={v => void saveEdit($, root.id, v)} />
+              <Box flexGrow={1} />
+              <Button key={`ec:${root.id}`} plain dimColor hover={{ color: 'error' }} onPress={() => void update($, editingA, () => null)}>
+                ✕
+              </Button>
+            </Box>
+            {others.length > 0 && (
+              <Box key={`mg:${root.id}`} flexDirection="row" flexWrap="wrap" columnGap={1}>
+                <Text dimColor>{'  '}merge into</Text>
+                {others.map(t => (
+                  <Button key={`mg:${root.id}:${t.id}`} plain dimColor hover={{ color: 'claude' }} onPress={() => void mergeStreams($, root.id, t.id)}>
+                    {`→ ${plain(t.title).slice(0, 20)}`}
+                  </Button>
+                ))}
+              </Box>
+            )}
+            {!root.isCollapsed && stepRows(root, root.steps, [])}
+          </Box>
+        )
+      }
       return (
         <Box flexDirection="column" marginTop={index === 0 ? 0 : 1}>
           <Box key={`r:${root.id}`} flexDirection="row">
@@ -1219,6 +1432,12 @@ export const register: Register = (on, options) => {
             </Button>
             <Box flexGrow={1} />
             <Text color={left === 0 ? 'success' : kind.color}>{left === 0 ? '✓ ' : `${left} `}</Text>
+            {root.kind === 'stream' && (
+              <Button key={`rn:${root.id}`} plain dimColor hover={{ color: 'ide' }} onPress={() => void update($, editingA, () => root.id)}>
+                ✎
+              </Button>
+            )}
+            {root.kind === 'stream' && <Text> </Text>}
             {canAdd && (
               <Button key={`add:${root.id}`} plain dimColor hover={{ color: 'ide' }} onPress={() => void update($, addingA, a => (a === root.id ? null : root.id))}>
                 +

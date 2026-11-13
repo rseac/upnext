@@ -7,6 +7,8 @@ export type ParsedRoot = {
   kind: 'reply' | 'offer' | 'tool' | 'likely'
   title: string
   steps: ParsedStep[]
+  /** The stream the model put it in, when a model read the reply. */
+  stream?: string
 }
 
 // Headings and lead-ins that introduce things to do.

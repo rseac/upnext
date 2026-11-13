@@ -4,6 +4,10 @@ import type { TestBody } from 'claude-code/testing'
 // The test runner has timers; the hooks module's own environment types none.
 declare const setTimeout: (fn: () => void, ms: number) => unknown
 
+type Finder = { findAll: (q: { type?: string; text?: RegExp }) => Promise<{ key?: string; text?: string }[]> }
+/** A step's row (its run button), not a stream header that shares its words. */
+const stepRow = async (ui: Finder, text: RegExp) => (await ui.findAll({ type: 'Button', text })).find(b => b.key?.startsWith('run:'))
+
 const PANE = {
   plugin: 'upnext',
   component: 'Pane',
@@ -38,6 +42,7 @@ function engine(on: On) {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('turn.complete', () => ({ text: '' }))
   on('ui.toast', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
   on('prompt.submit', (_, e) => {
     sent.push(e.text)
     return { text: e.text }
@@ -61,13 +66,13 @@ test('a turn fills the pane; a click drafts, ▶ sends', async ($, on) => {
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: /Next steps/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /⬢/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /cover nested lists/ })).toBeDefined()
     await ui.unmount()
   }
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  const row = await ui.find({ type: 'Button', text: /Update the README/ })
+  const row = await stepRow(ui, /Update the README/)
   await ui.press({ key: row!.key! })
   expect(drafted).toEqual(['Update the README'])
   expect(sent).toEqual([])
@@ -104,9 +109,9 @@ test('hidden characters never reach the pane', async ($, on) => {
   const sneaky = `## Next steps\n- Fix the \u001b[31mbuild\u001b[0m​ now\n- Hidden \u{E0041}\u{E0042} words`
   await $.turn.complete({ ...TURN, answer: sneaky, turnId: 't1' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  const row = await ui.find({ type: 'Button', text: /Fix the/ })
+  const row = await stepRow(ui, /Fix the/)
   expect(row?.text).toContain('Fix the build now')
-  expect(await ui.find({ type: 'Button', text: /Hidden/ })).toBeUndefined()
+  expect(await stepRow(ui, /Hidden/)).toBeUndefined()
   await ui.unmount()
 })
 
@@ -132,6 +137,6 @@ test('the model extractor reads a fork of the session', { options: { extractor: 
     await new Promise<void>(r => setTimeout(r, 10))
   }
   expect(await ui.find({ type: 'Text', text: /From the fork/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /Ship the/ })).toBeDefined()
+  expect(await stepRow(ui, /Ship the/)).toBeDefined()
   await ui.unmount()
 })

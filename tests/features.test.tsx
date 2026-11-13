@@ -6,6 +6,10 @@ declare const setTimeout: (fn: () => void, ms: number) => unknown
 const stores: Record<string, unknown>[] = []
 const tick = () => new Promise<void>(r => setTimeout(r, 10))
 
+type Finder = { findAll: (q: { type?: string; text?: RegExp }) => Promise<{ key?: string; text?: string }[]> }
+/** A step's row (its run button), not a stream header that shares its words. */
+const stepRow = async (ui: Finder, text: RegExp) => (await ui.findAll({ type: 'Button', text })).find(b => b.key?.startsWith('run:'))
+
 const PANE = {
   plugin: 'upnext',
   component: 'Pane',
@@ -92,7 +96,7 @@ test('auto: a reply with no listed steps gets a guess at what comes next', async
   const ui = await $.ui.mount(PANE)
   await waitFor(async () => (await ui.find({ type: 'Text', text: /Likely next/ })) !== undefined)
   expect(await ui.find({ type: 'Text', text: /Likely next/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /Run the loader tests/ })).toBeDefined()
+  expect(await stepRow(ui, /Run the loader tests/)).toBeDefined()
   expect(forks[0]).toContain('/real-skill')
   await ui.unmount()
 })
@@ -110,8 +114,8 @@ test('a step that runs a missing slash command is dropped', async ($, on) => {
   await $.session.start({ cwd: '/proj-c', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, reason: 'answer', answer: '## Next steps\n- /no-such-thing now\n- /real-skill go\n- Add tests', turnId: 't1' })
   const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Button', text: /no-such-thing/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', text: /real-skill/ })).toBeDefined()
+  expect(await stepRow(ui, /no-such-thing/)).toBeUndefined()
+  expect(await stepRow(ui, /real-skill/)).toBeDefined()
   await ui.unmount()
 })
 
@@ -121,14 +125,14 @@ test('a step sent from the pane is checked by the model, and marked ✗ when not
   await $.turn.complete({ ...TURN, reason: 'answer', answer: '## Next steps\n- Fix the flaky test', turnId: 't1' })
 
   const ui = await $.ui.mount(PANE)
-  const row = await ui.find({ type: 'Button', text: /Fix the flaky test/ })
+  const row = await stepRow(ui, /Fix the flaky test/)
   await ui.press({ key: row!.key!.replace('run:', 'alt:') })
   expect(sent).toEqual(['Fix the flaky test'])
 
   await $.turn.start({ text: 'Fix the flaky test', turnId: 't2' })
   await $.turn.complete({ ...TURN, reason: 'answer', answer: 'I looked into it.', turnId: 't2' })
-  await waitFor(async () => /✗/.test((await ui.find({ type: 'Button', text: /Fix the flaky test/ }))?.text ?? ''))
-  expect((await ui.find({ type: 'Button', text: /Fix the flaky test/ }))?.text).toContain('✗')
+  await waitFor(async () => /✗/.test((await stepRow(ui, /Fix the flaky test/))?.text ?? ''))
+  expect((await stepRow(ui, /Fix the flaky test/))?.text).toContain('✗')
   await ui.unmount()
 })
 
@@ -139,9 +143,9 @@ test('a prompt the person types that matches a step marks it', async ($, on) => 
   await $.turn.start({ text: 'ok, add unit tests for the parser please', turnId: 't2' })
 
   const ui = await $.ui.mount(PANE)
-  expect((await ui.find({ type: 'Button', text: /Add unit tests/ }))?.text).toContain('◐')
+  expect((await stepRow(ui, /Add unit tests/))?.text).toContain('◐')
   await $.turn.complete({ ...TURN, reason: 'answer', answer: 'Added them; all pass.', turnId: 't2' })
-  expect((await ui.find({ type: 'Button', text: /Add unit tests/ }))?.text).toContain('✓')
+  expect((await stepRow(ui, /Add unit tests/))?.text).toContain('✓')
   await ui.unmount()
 })
 
@@ -157,7 +161,7 @@ test('⇶ offers background agents for a group of two or more steps', async ($, 
   // the steps stay open and the person is told; a session tracks them by id.
   await ui.press({ key: bg!.key! })
   expect(toasts.length).toBe(2)
-  expect((await ui.find({ type: 'Button', text: /Add tests/ }))?.text).toContain('○')
+  expect((await stepRow(ui, /Add tests/))?.text).toContain('○')
   await ui.unmount()
 })
 
@@ -228,7 +232,7 @@ test('▶▶ runs a group one step per turn, and stops at one not done', async (
   await $.turn.complete({ ...TURN, reason: 'answer', answer: 'I could not find the docs folder.', turnId: 't3' })
   expect(sent.length).toBe(2)
   expect(await ui.find({ type: 'Text', text: /running in order/ })).toBeUndefined()
-  expect((await ui.find({ type: 'Button', text: /Update the docs/ }))?.text).toContain('✗')
+  expect((await stepRow(ui, /Update the docs/))?.text).toContain('✗')
   await ui.unmount()
 })
 
@@ -238,14 +242,14 @@ test('you can add your own steps and edit any step', async ($, on) => {
   const ui = await $.ui.mount(PANE)
 
   await ui.input({ key: 'add-mine', text: 'Benchmark the parser' })
-  const row = await ui.find({ type: 'Button', text: /Benchmark the parser/ })
+  const row = await stepRow(ui, /Benchmark the parser/)
   expect(row).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Your steps/ })).toBeDefined()
 
   const id = row!.key!.replace('run:', '')
   await ui.press({ key: `et:${id}` })
   await ui.input({ key: `edit:${id}`, text: 'Benchmark the parser on large replies' })
-  const edited = await ui.find({ type: 'Button', text: /large replies/ })
+  const edited = await stepRow(ui, /large replies/)
   await ui.press({ key: edited!.key! })
   expect(drafted).toEqual(['Benchmark the parser on large replies'])
   await ui.unmount()
@@ -258,9 +262,9 @@ test('Tidy marks done and removes steps the fork points at', async ($, on) => {
 
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'tidy' })
-  expect((await ui.find({ type: 'Button', text: /Add tests/ }))?.text).toContain('✓')
-  expect(await ui.find({ type: 'Button', text: /Port to Python/ })).toBeUndefined()
-  expect((await ui.find({ type: 'Button', text: /Tag a release/ }))?.text).toContain('○')
+  expect((await stepRow(ui, /Add tests/))?.text).toContain('✓')
+  expect(await stepRow(ui, /Port to Python/)).toBeUndefined()
+  expect((await stepRow(ui, /Tag a release/))?.text).toContain('○')
   expect(toasts[toasts.length - 1]).toContain('tidied 1 done, 1 removed')
   await ui.unmount()
 })

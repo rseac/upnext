@@ -10,12 +10,19 @@ export type Step = {
   children: Step[]
   /** The background agent working on it, while one is. */
   agentId?: string
+  /** What kind of group it first came from (an offer's prompt reads differently). */
+  origin?: RootKind
+  /** The turn it arrived in, to mark new steps. */
+  addedTurn?: number
 }
 
 /** Where a group of steps came from. */
-export type RootKind = 'reply' | 'offer' | 'tool' | 'todo' | 'likely' | 'mine'
+export type RootKind = 'reply' | 'offer' | 'tool' | 'todo' | 'likely' | 'mine' | 'stream'
 
-/** A top-level group in the tree: one section of one reply, one tool hint set, the todo list. */
+/**
+ * A top-level group in the tree. A `stream` gathers the steps of one line of
+ * work across turns; the others are one tool hint set, the todo list, a guess.
+ */
 export type Root = {
   id: string
   kind: RootKind
