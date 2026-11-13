@@ -19,6 +19,13 @@ export type Step = {
    * its prompt is made self-contained when it is sent, not stored that way.
    */
   isEarlier?: boolean
+  /**
+   * Who does it: absent for Claude (it is a prompt); 'check' for you to try or
+   * check; 'decide' for you to choose. Yours are never sent as prompts.
+   */
+  forYou?: 'check' | 'decide'
+  /** True once you set who does it (k); a model's label no longer changes it. */
+  isForYouSet?: boolean
   /** The last turn it was run, edited, moved or suggested again: its age counts from here. */
   touchedTurn?: number
   /** The turn it was first seen done; done steps leave after a few turns. */

@@ -67,6 +67,18 @@ How they're picked, cheapest first:
 
 Everything else stays under **everything else**, folded once more than eight steps are open (`e` unfolds). The 1/2/3 row, ghost text and herdr's sidebar line all use the ranking. Set `rank` to `local` for the free score only, or `off` for the plain list.
 
+## Steps for Claude, and steps for you
+
+Not every next step is a prompt. Replies also list things for you to do, and those are marked and never sent to Claude:
+
+| Mark | Kind | Example | A click |
+| --- | --- | --- | --- |
+| ○ | For Claude | Add integration tests for the parser | drafts or sends it, as a prompt |
+| ☐ | For you to try or check | Try the new pane · Press `p` · Check that ✓ steps leave | ticks it off |
+| ? | For you to decide | Pick a license · Say whether to build X | starts your answer: `Pick a license: ` |
+
+Word rules sort them as they arrive (try, check that, press, restart… for checks; pick, choose, decide, say whether… for decisions), and Haiku corrects them when it re-ranks. `w` switches a step between the three kinds, and that choice sticks. Your steps can rank among the most important (tagged **you**), but stay out of ghost text, the 1/2/3 row, ▶ on a stream, ▶▶ and hand-offs.
+
 ## Newest first, and steps that age
 
 Newest steps are on top, in each stream and across streams. Steps from one reply keep the order Claude gave them. Nothing piles up, because steps age:
@@ -209,6 +221,7 @@ The row under the mouse lights up.
 | Tidy (`t`) | Asks a fork of the session which open steps are already done or no longer relevant, marks or removes them, and says what changed. Costs about one short reply per click. |
 | `1`–`9` | Drafts that numbered step (with the pane focused: click it, or ctrl+x tab). |
 | `j` `k`, then `d` `s` `x` | Move the highlight (›), then draft, send or drop the highlighted step. |
+| `w` | Switches who does the highlighted step: Claude ○, you to check ☐, you to decide ?. |
 | `m`, then `r` | Mark steps (◆) in any streams, then run them in order, one per turn. `u` clears the marks. |
 | `p` / `e` / `o` | Re-rank the most important steps / show or fold everything else / show or fold older steps. |
 | `z` / `c` / `t` | Fold all / clear done / tidy. `q` stops a run in order. |

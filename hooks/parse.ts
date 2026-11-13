@@ -508,3 +508,19 @@ export function wrapRuns(runs: Run[], width: number, maxLines: number): Run[][] 
   }
   return lines
 }
+
+// Steps that are the person's to do, not prompts for Claude.
+const CHECK =
+  /^(?:please\s+)?(?:try(?! (?:a|an|another|increasing|reducing|using|adding|switching)\b)|press|click|tap|type|focus|watch|notice|restart|reload|widen|resize|look (?:at|over|through)|play with|(?:check|verify|see|confirm) (?:that|whether|if|how|what|the (?:pane|popup|viewer|sidebar|band|row|status line|window|page|ui|app|output|result))|open (?:the )?(?:pane|popup|viewer|app|page|browser|window|sidebar|settings|dashboard)|test (?:it|this|that|the \w+) (?:yourself|by hand|manually|out))\b/i
+const DECIDE =
+  /^(?:please\s+)?(?:pick|choose|decide|say (?:whether|which|if|what|how)|tell me|let me know|confirm (?:whether|which|if)|consider|think about|weigh|agree|approve|answer)\b/i
+const YOURS = /\b(?:yourself|your (?:own|terminal|font|theme|window|keyboard|config|machine|browser|laptop|setup)|in your\b|a few (?:turns|replies|sessions)|after this turn|by hand|manually)\b|`?(?:prefix|ctrl|alt|cmd|shift)\+/i
+
+/** Who a step is for: undefined for Claude, 'check' or 'decide' for the person. */
+export function forYouOf(text: string): 'check' | 'decide' | undefined {
+  const t = plain(text).replace(/^[`'"]/, '')
+  if (commandOf(text) !== undefined) return undefined
+  if (DECIDE.test(t)) return 'decide'
+  if (CHECK.test(t) || YOURS.test(t)) return 'check'
+  return undefined
+}

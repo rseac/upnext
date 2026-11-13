@@ -52,6 +52,8 @@ FANCY = {
     "stream": "●",
     "group": "◆",
     "open": "○",
+    "check": "☐",
+    "decide": "?",
     "queued": "◌",
     "running": "◐",
     "done": "✓",
@@ -74,6 +76,8 @@ ASCII = {
     "stream": "#",
     "group": "*",
     "open": "o",
+    "check": "[ ]",
+    "decide": "?",
     "queued": ".",
     "running": "~",
     "done": "+",
@@ -92,7 +96,7 @@ ASCII = {
     "more": "...",
 }
 
-HELP = "1-9 draft · j/k move · enter draft · s send · h agent · m mark · x drop · p re-rank · e everything else · o older · q quit"
+HELP = "1-9 draft · j/k move · enter draft · s send · h agent · m mark · w who · x drop · p re-rank · e everything else · o older · q quit"
 HELP_ASCII = HELP
 
 
@@ -175,6 +179,15 @@ def wrap_words(words, width, max_lines=3, more="…"):
             last.pop()
         last.append((more, False))
     return lines or [[]]
+
+
+def mark_of(g, s):
+    """The status mark: ☐ or ? for your steps while open, else the status."""
+    st = s.get("status", "open")
+    you = s.get("forYou")
+    if you and st != "done":
+        return g[you], (68 if you == "check" else 179)
+    return g.get(st, g["open"]), STATUS_COLOR.get(st)
 
 
 def safe(text):
@@ -319,8 +332,11 @@ class Viewer:
                 line.add(f" {num} " if num <= 9 else "   ", draft, fg=COLORS["claude"], bold=True)
                 if is_marked:
                     line.add("◆ " if g is FANCY else "* ", draft, fg=179, bold=True)
-                line.add(g.get(st, g["open"]), draft, fg=STATUS_COLOR.get(st))
+                glyph, gcol = mark_of(g, s)
+                line.add(glyph, draft, fg=gcol)
                 line.add(" ", draft)
+                if s.get("forYou"):
+                    tag = clip("you · " + safe(r.get("title", "")), 18, g["more"])
                 text_w = max(8, cols - line.width - cells(tag) - 3 - 7)
                 text = clip(" ".join(w for w, _ in words_of(safe(s.get("text", "")))), text_w, g["more"])
                 line.add(text, draft, bold=True)
@@ -328,10 +344,13 @@ class Viewer:
                 line.add(g["stream"] + " ", fg=color)
                 line.add(tag, fg=color, dim=True)
                 line.pad_to(cols - 6)
-                line.add(" ")
-                line.add(g["hand"], ("hand", sid), dim=True, hot=141)
-                line.add(" ")
-                line.add(g["send"], ("send", sid), dim=True, hot=71)
+                if s.get("forYou"):
+                    line.add("     ")
+                else:
+                    line.add(" ")
+                    line.add(g["hand"], ("hand", sid), dim=True, hot=141)
+                    line.add(" ")
+                    line.add(g["send"], ("send", sid), dim=True, hot=71)
                 line.add(" ")
                 line.add(g["drop"], ("dismiss", sid), dim=True, hot=167)
                 lines.append(line)
@@ -421,7 +440,8 @@ class Viewer:
                         line.add(f"{num} " if num is not None and num <= 9 else "  ", draft, fg=COLORS["claude"], bold=True)
                         if is_marked:
                             line.add("◆ " if g is FANCY else "* ", draft, fg=179, bold=True)
-                        line.add(g.get(st, g["open"]), draft, fg=STATUS_COLOR.get(st))
+                        glyph, gcol = mark_of(g, s)
+                        line.add(glyph, draft, fg=gcol)
                         line.add(" ", draft)
                     else:
                         line.add(cont + "    " + ("  " if is_marked else ""), fg=color, dim=True)
@@ -435,7 +455,10 @@ class Viewer:
                         line.add(" •", draft, fg=color, bold=True)
                     if n == 0 and s.get("handedTo"):
                         line.add(f" {g['hand']} {clip(safe(s['handedTo']), 14, g['more'])}", fg=141)
-                    if n == 0:
+                    if n == 0 and s.get("forYou"):
+                        line.pad_to(cols - 2)
+                        line.add(g["drop"], ("dismiss", sid), dim=True, hot=167)
+                    elif n == 0:
                         line.pad_to(cols - 6)
                         line.add(" ")
                         line.add(g["hand"], ("hand", sid), dim=True, hot=141)
@@ -680,6 +703,10 @@ class Viewer:
             sid = sel[2]["id"]
             self.marked = [x for x in self.marked if x != sid] if sid in self.marked else self.marked + [sid]
             self.cursor = min(self.cursor + 1, max(0, len(self.rows) - 1))
+        elif k == "w" and sel[0] == "step":
+            self.act("kind", sel[2]["id"], "changed who does it")
+        elif k in ("s", "h") and sel[0] == "step" and sel[2].get("forYou"):
+            self.run_zone(("draft", sel[2]["id"]))
         elif k == "u":
             self.marked = []
         elif k == "e":

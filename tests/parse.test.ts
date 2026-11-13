@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { clean, parseReply, parseToolText, wrapRuns, runsOf } from '../hooks/parse'
+import { clean, forYouOf, parseReply, parseToolText, wrapRuns, runsOf } from '../hooks/parse'
 
 const REPLY = `Done: the parser now handles nested lists.
 
@@ -54,4 +54,25 @@ test('wrapping keeps to the width and ends in an ellipsis', async () => {
 test('clean drops escapes, invisible characters and tag-smuggled text', async () => {
   expect(clean('a\u001b[1mb\u001b[0m​c')).toBe('abc')
   expect(clean('ok\u{E0041}')).toBe('')
+})
+
+test('steps for the person are told apart from prompts for Claude', async () => {
+  const cases: [string, 'check' | 'decide' | undefined][] = [
+    ['Try the new pane', 'check'],
+    ['Press `p` once to see the ranking', 'check'],
+    ['Check that finished steps disappear about three turns after ✓', 'check'],
+    ['Restart the viewer and compare it with the image', 'check'],
+    ['Work for a few turns and check the order', 'check'],
+    ['Open the pane inside Claude with `/upnext`', 'check'],
+    ['Pick a license (MIT if unsure)', 'decide'],
+    ['Say whether to build ageing as described', 'decide'],
+    ['Choose the layout: A + B, or keep the split', 'decide'],
+    ['Add integration tests for the parser', undefined],
+    ['Fix the crash on startup', undefined],
+    ['Check the logs for the timeout error', undefined],
+    ['Try increasing the timeout to 30 seconds', undefined],
+    ['Open a PR for the parser fix', undefined],
+    ['/review the README changes', undefined],
+  ]
+  for (const [text, want] of cases) expect([text, forYouOf(text)]).toEqual([text, want])
 })
