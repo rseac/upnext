@@ -16,6 +16,7 @@ type On = Parameters<TestBody>[1]
 type Found = { key?: string; text?: string }
 
 function engine(on: On, kept: Record<string, unknown> = {}) {
+  on('session.id', () => ({ value: 'sess-c' }))
   const drafted: string[] = []
   const sent: string[] = []
   on('command.register', () => ({ value: { command: 'upnext' } }))
@@ -91,7 +92,7 @@ test('if the list is ever found empty, the saved steps come back before a turn s
   const kept: Record<string, unknown> = {}
   engine(on, kept)
   await $.session.start({ cwd: '/c3', surface: 'terminal', isInteractive: true })
-  kept['roots:/c3'] = [
+  kept['roots:session:sess-c'] = [
     {
       id: 'r1',
       kind: 'stream',
@@ -105,6 +106,6 @@ test('if the list is ever found empty, the saved steps come back before a turn s
   await $.turn.complete({ ...TURN, answer: 'ok', turnId: 't1' })
   const ui = await $.ui.mount(PANE)
   expect((await ui.findAll({ type: 'Button', text: /Auth · earlier/ })).length).toBe(1)
-  expect(JSON.stringify(kept['roots:/c3'])).toContain('Rotate the signing key')
+  expect(JSON.stringify(kept['roots:session:sess-c'])).toContain('Rotate the signing key')
   await ui.unmount()
 })

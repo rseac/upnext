@@ -1,6 +1,6 @@
 {
   "name": "upnext",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
   "author": {
     "name": "rseac"
@@ -105,8 +105,8 @@
     },
     "keepAcrossSessions": {
       "type": "boolean",
-      "title": "Keep open steps for the next session",
-      "description": "Saves open steps per project folder and brings them back, folded, when a session starts there.",
+      "title": "Keep a session's steps for when it is resumed",
+      "description": "Saves each session's open steps and brings them back, folded, when you resume that session. A new session always starts with an empty list.",
       "default": true
     },
     "autoOpen": {

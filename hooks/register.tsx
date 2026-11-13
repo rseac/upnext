@@ -63,8 +63,11 @@ const cfg = {
   /** Untouched steps fade after this many turns, and move to "older" after `oldAfter`; 0 turns either off. */
   fadeAfter: 10,
   oldAfter: 30,
-  cwd: '',
-  /** The session's folder, whether or not steps are kept across sessions. */
+  /** Keep this session's steps for when it is resumed. */
+  keep: true,
+  /** The session the steps belong to; it changes with a /clear. */
+  sessionId: '',
+  /** The session's folder. */
   sessionCwd: '',
 }
 
@@ -481,7 +484,9 @@ async function modelPass($: EngineInterface, job: Job) {
 
 // ---- Keeping the tree: state, status line, and the project's saved copy -----
 
-const storeKey = () => `roots:${cfg.cwd}`
+/** Steps are kept per session: a resumed session gets its own back, a new one starts empty. */
+const storeKey = () => `roots:session:${cfg.sessionId}`
+const persists = () => cfg.keep && cfg.sessionId !== ''
 
 /** What is kept for the next session: open steps of reply groups, reset to open. */
 function snapshot(roots: Root[]): Root[] {
@@ -532,7 +537,7 @@ async function changeRoots($: EngineInterface, fn: (roots: Root[]) => Root[]): P
     const open = treeOf(roots, await read($, turnA)).flatMap(r => allSteps(r.steps)).filter(isOpen).length
     $.ui.status(open > 0 ? `✦ ${open} next step${open === 1 ? '' : 's'}` : undefined)
   }
-  if (cfg.cwd !== '') {
+  if (persists()) {
     const kept = snapshot(roots)
     const key = `${storeKey()}\n${JSON.stringify(kept)}`
     if (key !== lastSaved) {
@@ -547,7 +552,7 @@ async function changeRoots($: EngineInterface, fn: (roots: Root[]) => Root[]): P
 }
 
 async function restore($: EngineInterface) {
-  if ((await read($, rootsA)).length > 0) return
+  if (!persists() || (await read($, rootsA)).length > 0) return
   const saved = await $.store.get(storeKey()).catch(() => undefined)
   if (!isRoots(saved) || saved.length === 0) return
   await changeRoots($, () =>
@@ -1663,6 +1668,7 @@ async function herdrSync($: EngineInterface, roots: Root[]) {
   const state = {
     version: 1,
     claudePane: herdr.pane,
+    session: cfg.sessionId,
     top: ranking(roots, await read($, rankA), turn).top.map(t => ({ id: t.step.id, why: t.why })),
     roots: shown.map(r => ({
       id: r.id,
@@ -1937,7 +1943,8 @@ export const register: Register = (on, options) => {
   herdr.ascii = options.herdrGlyphs === 'ascii'
 
   on('session.start', async ($, e, next) => {
-    cfg.cwd = keepAcrossSessions ? e.cwd : ''
+    cfg.keep = keepAcrossSessions
+    cfg.sessionId = await $.session.id().catch(() => '')
     await $.command.register({
       name: 'upnext',
       description: 'Show the Up next pane. Also: herdr, split, <stream> to show one stream, all, clear, export [file], issues',
@@ -2058,6 +2065,14 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     // If a /clear also emptied this session's values, bring the saved steps back
     // before anything new is saved over them.
+    if (e.agentId === undefined) {
+      // After a /clear the process goes on under a new session id, with no session.start.
+      const id = await $.session.id().catch(() => cfg.sessionId)
+      if (id !== cfg.sessionId) {
+        cfg.sessionId = id
+        lastSaved = ''
+      }
+    }
     if (e.agentId === undefined && keepAcrossSessions) await restore($)
     if (e.agentId === undefined) {
       const said = clean(e.text, 200)

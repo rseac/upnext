@@ -234,7 +234,7 @@ The status mark shows progress: ○ open, ◌ queued, ◐ running, ⇶ with a ba
 
 When a step's turn ends, it gets ✓, or ✗ if the reply says it couldn't finish. In `auto` and `model` mode, a fork then checks the work and corrects the mark if needed. Steps also track prompts you type yourself: if what you type clearly matches an open step, that step is marked too.
 
-Open steps are saved per project folder. The next session there brings them back, folded and marked "earlier". The status line shows how many are open.
+**Each session has its own list.** A new session starts empty, even in the same project folder; resuming a session (`claude --resume`) brings its own open steps back, folded and marked "earlier". In herdr, the popup shows the list of the Claude session in the pane it opens over, never another session's. The status line shows how many are open.
 
 **After `/clear`, or in a new session**, steps from before are folded and marked "earlier". The pane shows them exactly as before, but clicking one builds a prompt that stands on its own: the step itself instead of "Yes, please…", the stream it belongs to, and a note to check the code first, since some of it may be done. That wording is put together when you click and never stored. `/clear` also puts queued and running steps back to open and stops a run in order. Background agents (⇶) are left to finish.
 
@@ -266,7 +266,7 @@ Step text comes from replies and tool output, which can quote files and web page
 | `band` | `true` | Shows the top three open steps above the prompt box. |
 | `ghostText` | `true` | Offers the top new step as dim text in the prompt box. |
 | `statusLine` | `true` | Shows "✦ 3 next steps" in the status line. |
-| `keepAcrossSessions` | `true` | Saves open steps per project folder and restores them. |
+| `keepAcrossSessions` | `true` | Saves each session's open steps, and brings them back when you resume that session. |
 | `autoOpen` | `true` | Opens the pane when new steps arrive. |
 | `scanToolOutput` | `true` | Reads Bash output and todo/task lists too. |
 | `autoTick` | `true` | Ticks steps off after a commit that covers them, or a test run that passes. |

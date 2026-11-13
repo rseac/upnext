@@ -31,7 +31,8 @@ const LONG = 'I refactored the loader and moved the cache into its own module; e
 
 type On = Parameters<TestBody>[1]
 
-function engine(on: On, fork: string[] = [], store?: Record<string, unknown>) {
+function engine(on: On, fork: string[] = [], store?: Record<string, unknown>, sessionId = 'sess-1') {
+  on('session.id', () => ({ value: sessionId }))
   if (store === undefined) {
     // Keep the store in a map the test can read.
     const kept: Record<string, unknown> = {}
@@ -165,20 +166,20 @@ test('⇶ offers background agents for a group of two or more steps', async ($, 
   await ui.unmount()
 })
 
-test('open steps come back in the next session, and the status line counts them', async ($, on) => {
+test("open steps are saved under this session's id, and the status line counts them", async ($, on) => {
   const { status } = engine(on)
   const store = stores[stores.length - 1]!
   await $.session.start({ cwd: '/proj-g', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, reason: 'answer', answer: '## Next steps\n- Add tests\n- [x] Ship it', turnId: 't1' })
   expect(status[status.length - 1]).toBe('✦ 1 next step')
 
-  const saved = store['roots:/proj-g'] as { steps: { text: string }[] }[]
+  const saved = store['roots:session:sess-1'] as { steps: { text: string }[] }[]
   expect(saved[0]!.steps.map(s => s.text)).toEqual(['Add tests'])
 })
 
-test('saved steps are restored, folded, when the pane is empty', async ($, on) => {
+test('a resumed session gets its saved steps back, folded', async ($, on) => {
   engine(on, [], {
-    'roots:/proj-h': [
+    'roots:session:sess-1': [
     {
       id: 'old1',
       kind: 'reply',
@@ -266,5 +267,29 @@ test('Tidy marks done and removes steps the fork points at', async ($, on) => {
   expect(await stepRow(ui, /Port to Python/)).toBeUndefined()
   expect((await stepRow(ui, /Tag a release/))?.text).toContain('○')
   expect(toasts[toasts.length - 1]).toContain('tidied 1 done, 1 removed')
+  await ui.unmount()
+})
+
+test("a new session starts empty, even in the same folder as another session's steps", async ($, on) => {
+  engine(
+    on,
+    [],
+    {
+      'roots:session:other-session': [
+        {
+          id: 'x1',
+          kind: 'stream',
+          title: 'Auth',
+          turn: 3,
+          isCollapsed: false,
+          steps: [{ id: 'x1.0', text: 'Rotate the signing key', prompt: 'Rotate the signing key', status: 'open', isCollapsed: false, children: [] }],
+        },
+      ],
+    },
+    'new-session',
+  )
+  await $.session.start({ cwd: '/proj-h', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /Nothing queued up/ })).toBeDefined()
   await ui.unmount()
 })

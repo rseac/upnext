@@ -766,7 +766,10 @@ def events(fd):
 
 
 def popup_paths():
-    """The state of the Claude pane under the popup, else the most recently updated one."""
+    """The state of the Claude session in the pane under the popup; None when it has none.
+
+    Never another session's: the list belongs to the session it is opened from.
+    """
     folder = os.path.expanduser("~/.claude/upnext/herdr")
     pane = None
     try:
@@ -786,14 +789,7 @@ def popup_paths():
     if pane and os.path.exists(os.path.join(folder, fid(pane) + ".json")):
         base = os.path.join(folder, fid(pane))
         return [base + ".json", base + ".actions"]
-    try:
-        states = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".json")]
-    except OSError:
-        return None
-    if not states:
-        return None
-    newest = max(states, key=os.path.getmtime)
-    return [newest, newest[:-5] + ".actions"]
+    return None
 
 
 def main():
@@ -804,8 +800,8 @@ def main():
     if popup and not args:
         args = popup_paths()
         if not args:
-            print("Up next: no Claude session in herdr has written its steps yet.")
-            print("Run /upnext herdr in Claude once, then try again.")
+            print("Up next: the pane under this popup has no Up next list.")
+            print("Open it from a Claude Code session running the upnext mod.")
             time.sleep(3)
             return 1
     if len(args) != 2:
