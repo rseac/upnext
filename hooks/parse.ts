@@ -32,9 +32,34 @@ const indentOf = (s: string) => {
   return n
 }
 
-/** Drop link targets and HTML tags; keep `code`, **bold** and *italic* marks. */
+// Step text comes from replies and tool output, which can carry text from
+// files and web pages. Before it is drawn or sent, keep only what a person can
+// see: no terminal escape sequences; no control, format, unassigned,
+// private-use or surrogate characters; no variation selectors or blank-looking
+// letters; at most three combining marks in a row. Text holding Unicode tag
+// characters is dropped whole: their only use in a prompt is to hide words.
+const ESCAPES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g
+const TAGS = /[\u{E0000}-\u{E007F}]/u
+const UNSEEN = /[\p{Cc}\p{Cf}\p{Cn}\p{Co}\p{Cs}\p{Variation_Selector}ᅟᅠㅤﾠ]/gu
+const COMBINING_RUN = /(\p{M}{3})\p{M}+/gu
+
+/** Visible text only, whitespace folded, at most `max` code points ('' if unsafe). */
+export function clean(text: string, max = 500): string {
+  if (TAGS.test(text)) return ''
+  const safe = text
+    .replace(ESCAPES, '')
+    .replace(/\s+/g, ' ')
+    .replace(UNSEEN, '')
+    .replace(COMBINING_RUN, '$1')
+    .replace(/ {2,}/g, ' ')
+    .trim()
+  const points = [...safe]
+  return points.length > max ? `${points.slice(0, max - 1).join('')}…` : safe
+}
+
+/** Clean, then drop link targets and HTML tags; keep `code`, **bold** and *italic* marks. */
 export const tidy = (s: string) =>
-  s
+  clean(s)
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/<\/?[a-z][^>]*>/gi, '')
@@ -247,8 +272,8 @@ export function parseToolText(text: string): ParsedRoot[] {
     // git status prints "(use "git add <file>..." ...)" on every run: noise.
     if (/^\s*\(use\b/i.test(line)) continue
     for (const m of line.matchAll(RUN_HINT)) {
-      const cmd = m[1]!.trim()
-      if (/[<>]/.test(cmd)) continue
+      const cmd = clean(m[1]!, 120)
+      if (cmd === '' || /[<>`]/.test(cmd)) continue
       const step = `Run \`${cmd}\``
       const k = keyOf(step)
       if (seen.has(k)) continue

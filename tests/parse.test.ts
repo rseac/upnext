@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { parseReply, parseToolText, wrapRuns, runsOf } from '../hooks/parse'
+import { clean, parseReply, parseToolText, wrapRuns, runsOf } from '../hooks/parse'
 
 const REPLY = `Done: the parser now handles nested lists.
 
@@ -49,4 +49,9 @@ test('wrapping keeps to the width and ends in an ellipsis', async () => {
   const lines = wrapRuns(runsOf('one two three four five six seven eight nine ten'), 10, 2)
   expect(lines.length).toBe(2)
   expect(lines[1]!.map(r => r.text).join('').endsWith('…')).toBe(true)
+})
+
+test('clean drops escapes, invisible characters and tag-smuggled text', async () => {
+  expect(clean('a\u001b[1mb\u001b[0m​c')).toBe('abc')
+  expect(clean('ok\u{E0041}')).toBe('')
 })

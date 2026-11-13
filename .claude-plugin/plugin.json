@@ -1,20 +1,47 @@
 {
   "name": "next-steps-pane",
-  "version": "0.1.0",
-  "description": "A side pane that gathers the next steps Claude suggests into a tree you can click to run or dismiss.",
+  "version": "0.2.0",
+  "description": "A side pane that gathers the next steps Claude suggests into a tree you can click to draft, send or dismiss.",
+  "author": { "name": "rseac" },
+  "keywords": ["next-steps", "suggestions", "pane", "tree", "function-hooks", "ui"],
   "types": "./types/index.d.ts",
   "userConfig": {
+    "clickAction": {
+      "type": "string",
+      "title": "What a click on a step does",
+      "description": "draft: put the step's prompt in the prompt box for you to edit and send. send: send it right away. Steps from Bash output are always drafted.",
+      "default": "draft",
+      "options": ["draft", "send"]
+    },
     "extractor": {
       "type": "string",
       "title": "How to find next steps",
-      "description": "heuristic: read headings, lists and offers in each reply (free, instant). model: ask Haiku to pull them out (smarter, costs a small call per turn; falls back to heuristic).",
+      "description": "heuristic: read headings, lists and offers in each reply (free, instant). model: ask a fork of this session, which sees the whole conversation and shares its prompt cache (about one short reply per turn); falls back to heuristic.",
       "default": "heuristic",
       "options": ["heuristic", "model"]
+    },
+    "minAnswerChars": {
+      "type": "number",
+      "title": "Shortest reply to ask the model about",
+      "description": "With the model extractor, replies shorter than this are read by the heuristic alone.",
+      "default": 80
+    },
+    "band": {
+      "type": "boolean",
+      "title": "Show the top steps above the prompt",
+      "description": "A row above the prompt box with the top three open steps: press 1, 2 or 3 from an empty prompt box to use one, 0 to hide the row until the next turn.",
+      "default": true
+    },
+    "ghostText": {
+      "type": "boolean",
+      "title": "Offer the top step as ghost text",
+      "description": "Shows the top new step as dim text in the prompt box; Tab takes it as a draft.",
+      "default": true
     },
     "autoOpen": {
       "type": "boolean",
       "title": "Open the pane when new steps arrive",
-      "description": "Opens the pane beside the transcript the first time steps are found, unless you closed it.",
+      "description": "Opens the pane beside the transcript when steps are found, unless you closed it.",
       "default": true
     },
     "scanToolOutput": {

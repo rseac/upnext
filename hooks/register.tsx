@@ -1,9 +1,9 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
 import type { Inflight, Root, RootKind, Step, StepStatus } from '../types'
 import {
-  flat,
+  clean,
   keyOf,
   parseReply,
   parseToolText,
@@ -18,6 +18,7 @@ import {
 const PANE = 'next-steps'
 const TITLE = 'Next steps'
 const MAX_ROOTS = 24
+const BAND_ITEMS = 3
 
 // Bump a tag when that value's fields change: older stored values are then
 // read as the initial value instead of being misread.
@@ -26,6 +27,8 @@ const pendingA = atom({ plugin: 'next-steps-pane', key: 'pending' } as const, []
 const inflightA = atom({ plugin: 'next-steps-pane', key: 'inflight' } as const, [], { shape: 'inflight-1' })
 const turnA = atom({ plugin: 'next-steps-pane', key: 'turn' } as const, 0)
 const closedA = atom({ plugin: 'next-steps-pane', key: 'isClosedByPerson' } as const, false)
+const loadingA = atom({ plugin: 'next-steps-pane', key: 'loadingTurn' } as const, 0)
+const bandHiddenA = atom({ plugin: 'next-steps-pane', key: 'bandHiddenTurn' } as const, 0)
 
 // ---- Tree helpers ----------------------------------------------------------
 
@@ -85,18 +88,10 @@ const mapSteps = (steps: Step[], fn: (s: Step) => Step | undefined): Step[] =>
 const mapAll = (roots: Root[], fn: (s: Step) => Step | undefined): Root[] =>
   roots.map(r => ({ ...r, steps: mapSteps(r.steps, fn) })).filter(r => r.steps.length > 0)
 
-function find(roots: Root[], id: string): { root: Root; step: Step; ancestors: Step[] } | undefined {
+function find(roots: Root[], id: string): { root: Root; step: Step } | undefined {
   for (const root of roots) {
-    const walk = (steps: Step[], ancestors: Step[]): { step: Step; ancestors: Step[] } | undefined => {
-      for (const step of steps) {
-        if (step.id === id) return { step, ancestors }
-        const hit = walk(step.children, [...ancestors, step])
-        if (hit) return hit
-      }
-      return undefined
-    }
-    const hit = walk(root.steps, [])
-    if (hit) return { root, ...hit }
+    const step = allSteps(root.steps).find(s => s.id === id)
+    if (step) return { root, step }
   }
   return undefined
 }
@@ -132,17 +127,29 @@ function dedupe(existing: Root[], incoming: Root[]): Root[] {
   return mapAll(incoming, s => (s.children.length === 0 && open.has(keyOf(s.text)) ? undefined : s))
 }
 
-// ---- Reading a turn --------------------------------------------------------
+/** Open top-level steps, newest group first: what the band and ghost text offer. */
+function topSteps(roots: Root[], n: number): { root: Root; step: Step }[] {
+  const out: { root: Root; step: Step }[] = []
+  for (const root of roots) {
+    for (const step of root.steps) {
+      if (step.status === 'open') out.push({ root, step })
+      if (out.length >= n) return out
+    }
+  }
+  return out
+}
 
-const MODEL_SYSTEM = `You read the final message an AI coding assistant sent at the end of a turn and pull out the concrete next steps it suggests, recommends or offers to do, as a tree.
+// ---- Finding steps with the model ------------------------------------------
 
-Answer with JSON only, no prose and no code fence:
+const FORK_PROMPT = `Do not continue the task and do not use tools. Instead, look at your last reply in this conversation and list the concrete next steps it suggests, recommends or offers to do, as a tree.
+
+Answer with ONLY JSON, no prose and no code fence:
 {"groups":[{"title":"short heading","steps":[{"text":"imperative action, under 100 characters","children":[...]}]}]}
 
 Rules:
-- Only actions someone could ask the assistant to do next. Skip summaries of work already done, explanations and questions about preferences.
-- Keep the assistant's own grouping and nesting where it has one; otherwise one group titled "Next steps".
-- Keep inline code in backticks.
+- Only actions the user could ask you to do next. Skip summaries of work already done, explanations and questions about preferences.
+- Keep the reply's own grouping and nesting where it has one; otherwise one group titled "Next steps".
+- Name the actual files, tests or commands. Keep inline code in backticks.
 - If there are none, answer {"groups":[]}.`
 
 type ModelGroup = { title?: unknown; steps?: unknown }
@@ -163,76 +170,96 @@ function fromModel(text: string): ParsedRoot[] | undefined {
     !Array.isArray(list) || depth > 4
       ? []
       : (list as ModelStep[])
-          .filter(s => typeof s?.text === 'string' && s.text.trim() !== '')
+          .map(s => ({ text: typeof s?.text === 'string' ? clean(s.text, 300) : '', children: steps(s?.children, depth + 1) }))
+          .filter(s => s.text !== '')
           .slice(0, 20)
-          .map(s => ({ text: String(s.text).trim().slice(0, 300), children: steps(s.children, depth + 1) }))
   return (data.groups as ModelGroup[])
     .map(g => ({
       kind: 'reply' as const,
-      title: typeof g?.title === 'string' && g.title.trim() ? g.title.trim().slice(0, 80) : TITLE,
+      title: (typeof g?.title === 'string' ? clean(g.title, 80) : '') || TITLE,
       steps: steps(g?.steps, 0),
     }))
     .filter(g => g.steps.length > 0)
 }
 
-async function extract($: EngineInterface, answer: string, useModel: boolean): Promise<ParsedRoot[]> {
+/** Asks a fork of this session (shares its prompt cache); falls back to the parser. */
+async function extractWithModel($: EngineInterface, answer: string): Promise<ParsedRoot[]> {
   const heuristic = parseReply(answer)
-  if (!useModel || answer.trim().length < 40) return heuristic
-  const r = await $.model.complete({ model: 'haiku', system: MODEL_SYSTEM, prompt: answer.slice(-16000) })
-  if (!r.isAnswered) return heuristic
-  const parsed = fromModel(r.text)
-  return parsed === undefined ? heuristic : parsed
-}
-
-async function addRoots($: EngineInterface, incoming: Root[], autoOpen: boolean) {
-  let added = 0
-  await update($, rootsA, roots => {
-    const fresh = dedupe(roots, incoming)
-    added = fresh.length
-    if (fresh.length === 0) return roots
-    // Newest first; earlier groups fold away (the todo list stays as it is).
-    const older = roots.map(r => (r.kind === 'todo' ? r : { ...r, isCollapsed: true }))
-    return [...fresh, ...older].slice(0, MAX_ROOTS)
-  })
-  if (added > 0 && autoOpen && !(await read($, closedA))) {
-    await $.ui.open({ id: PANE, title: TITLE })
+  try {
+    const r = await $.model.fork({ prompt: FORK_PROMPT, effort: 'low' })
+    if (!r.isAnswered) return heuristic
+    return fromModel(r.text) ?? heuristic
+  } catch (error) {
+    $.ui.log(`next-steps-pane: model call failed: ${String(error)}`)
+    return heuristic
   }
 }
 
-// ---- Running steps ---------------------------------------------------------
+// Options, set by register (it runs again on every reload).
+const cfg = { sendOnClick: false, autoOpen: true, ghostText: true }
 
-async function runPrompt($: EngineInterface, stepIds: string[], prompt: string) {
+// ---- Acting on steps -----------------------------------------------------
+
+const forget = ($: EngineInterface, prompt: string, ids: string[]) =>
+  Promise.all([
+    update($, inflightA, list => list.filter(f => f.prompt !== prompt || f.turnId !== undefined)),
+    update($, rootsA, roots => mapAll(roots, s => (ids.includes(s.id) && s.status === 'queued' ? { ...s, status: 'open' } : s))),
+  ])
+
+async function send($: EngineInterface, stepIds: string[], prompt: string) {
   await update($, inflightA, list => [...list, { stepIds, prompt }].slice(-20))
   await update($, rootsA, roots =>
     mapAll(roots, s => (stepIds.includes(s.id) && s.status !== 'done' ? { ...s, status: 'queued' } : s)),
   )
   // Queues behind a running turn; resolves as its own turn starts.
-  void $.prompt.submit({ text: prompt, asUser: true })
+  void $.prompt.submit({ text: prompt, asUser: true }).then(
+    async r => {
+      if (r.drop === undefined) return
+      await forget($, prompt, stepIds)
+      $.ui.toast('next-steps-pane: the prompt was not sent')
+    },
+    async error => {
+      await forget($, prompt, stepIds)
+      $.ui.toast(`next-steps-pane: could not send: ${String(error)}`)
+    },
+  )
 }
 
-async function runStep($: EngineInterface, id: string) {
+async function draft($: EngineInterface, stepIds: string[], prompt: string) {
+  // If it is sent unchanged, its steps are still tracked to done.
+  await update($, inflightA, list => [...list, { stepIds, prompt }].slice(-20))
+  try {
+    const r = await $.prompt.fill({ text: prompt, mode: 'replace' })
+    if (!r.isFilled) $.ui.toast('next-steps-pane: could not fill the prompt box (close any dialog first)')
+  } catch (error) {
+    $.ui.toast(`next-steps-pane: could not fill the prompt box: ${String(error)}`)
+  }
+}
+
+const openIds = (steps: Step[]) => steps.filter(s => s.status !== 'done').map(s => s.id)
+
+/** `how`: 'send' sends now, 'draft' fills the prompt box. Tool output is always drafted. */
+async function actOnStep($: EngineInterface, id: string, how: 'send' | 'draft') {
   const hit = find(await read($, rootsA), id)
   if (!hit) return
-  const ids = [hit.step, ...allSteps(hit.step.children)].filter(s => s.status !== 'done').map(s => s.id)
-  await runPrompt($, ids.length > 0 ? ids : [hit.step.id], promptForStep(hit.step))
+  const ids = openIds([hit.step, ...allSteps(hit.step.children)])
+  const prompt = promptForStep(hit.step)
+  const stepIds = ids.length > 0 ? ids : [hit.step.id]
+  if (how === 'send' && hit.root.kind !== 'tool') await send($, stepIds, prompt)
+  else await draft($, stepIds, prompt)
 }
 
-async function runRoot($: EngineInterface, rootId: string) {
+async function actOnRoot($: EngineInterface, rootId: string) {
   const root = (await read($, rootsA)).find(r => r.id === rootId)
   if (!root) return
-  const ids = allSteps(root.steps).filter(s => s.status !== 'done').map(s => s.id)
+  const ids = openIds(allSteps(root.steps))
   if (ids.length === 0) return
-  await runPrompt($, ids, promptForRoot(root))
+  if (root.kind === 'tool') await draft($, ids, promptForRoot(root))
+  else await send($, ids, promptForRoot(root))
 }
 
-async function editStep($: EngineInterface, id: string) {
-  const hit = find(await read($, rootsA), id)
-  if (!hit) return
-  const prompt = promptForStep(hit.step)
-  // If it is sent unchanged, the step is still tracked to done.
-  await update($, inflightA, list => [...list, { stepIds: [id], prompt }].slice(-20))
-  await $.prompt.fill({ text: prompt, mode: 'replace' })
-}
+const click = ($: EngineInterface, id: string) => actOnStep($, id, cfg.sendOnClick ? 'send' : 'draft')
+const other = ($: EngineInterface, id: string) => actOnStep($, id, cfg.sendOnClick ? 'draft' : 'send')
 
 const dismissStep = ($: EngineInterface, id: string) =>
   update($, rootsA, roots => mapAll(roots, s => (s.id === id ? undefined : s)))
@@ -260,14 +287,33 @@ const foldAll = ($: EngineInterface) =>
     return roots.map(r => ({ ...r, isCollapsed: anyOpen }))
   })
 
-const markDone = (roots: Root[], ids: string[], status: StepStatus) =>
+const setStatus = (roots: Root[], ids: string[], status: StepStatus) =>
   mapAll(roots, s => (ids.includes(s.id) && s.status !== 'done' ? { ...s, status } : s))
+
+async function addRoots($: EngineInterface, incoming: Root[]) {
+  let added = 0
+  const roots = await update($, rootsA, roots => {
+    const fresh = dedupe(roots, incoming)
+    added = fresh.length
+    if (fresh.length === 0) return roots
+    // Newest first; earlier groups fold away (todo and task lists stay as they are).
+    const older = roots.map(r => (r.kind === 'todo' ? r : { ...r, isCollapsed: true }))
+    return [...fresh, ...older].slice(0, MAX_ROOTS)
+  })
+  if (added === 0) return
+  if (cfg.autoOpen && !(await read($, closedA))) await $.ui.open({ id: PANE, title: TITLE })
+  if (cfg.ghostText) {
+    // The top step, as dim text in the prompt box: Tab takes it as a draft.
+    const top = topSteps(roots, 1)[0]
+    if (top) void $.prompt.suggest({ text: promptForStep(top.step) }).catch(() => undefined)
+  }
+}
 
 // ---- Tool output -----------------------------------------------------------
 
 const todoStatus = (s: string): StepStatus => (s === 'completed' ? 'done' : s === 'in_progress' ? 'running' : 'open')
 
-async function setTodoRoot($: EngineInterface, id: string, title: string, steps: Step[]) {
+async function setListRoot($: EngineInterface, id: string, title: string, steps: Step[]) {
   const turn = await read($, turnA)
   await update($, rootsA, roots => {
     const old = roots.find(r => r.id === id)
@@ -278,12 +324,34 @@ async function setTodoRoot($: EngineInterface, id: string, title: string, steps:
   })
 }
 
+const listStep = (id: string, text: string, status: StepStatus): Step | undefined => {
+  const t = clean(text, 300)
+  return t === '' ? undefined : { id, text: t, prompt: promptFor('todo', t, []), status, isCollapsed: false, children: [] }
+}
+
+
+/** The model's reading of a reply, off the turn's path. */
+async function modelPass($: EngineInterface, answer: string, turn: number) {
+  const parsed = await extractWithModel($, answer)
+  // A newer turn ended while the model worked: its steps are newer, drop these.
+  if ((await read($, turnA)) !== turn) return
+  await update($, loadingA, n => (n === turn ? 0 : n))
+  await addRoots($, parsed.map(p => toRoot(p, turn)))
+}
+
 // ---- The module ------------------------------------------------------------
 
 export const register: Register = (on, options) => {
   const useModel = options.extractor === 'model'
-  const autoOpen = options.autoOpen !== false
+  cfg.sendOnClick = options.clickAction === 'send'
+  cfg.autoOpen = options.autoOpen !== false
+  cfg.ghostText = options.ghostText !== false
+  const { sendOnClick, autoOpen } = cfg
   const scanTools = options.scanToolOutput !== false
+  const showBand = options.band !== false
+  const minAnswerChars = typeof options.minAnswerChars === 'number' ? options.minAnswerChars : 80
+
+  // ---- Hooks ---------------------------------------------------------------
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -323,7 +391,7 @@ export const register: Register = (on, options) => {
         ids = list[i]!.stepIds
         return list.map((f, j): Inflight => (j === i ? { ...f, turnId: e.turnId } : f))
       })
-      if (ids.length > 0) await update($, rootsA, roots => markDone(roots, ids, 'running'))
+      if (ids.length > 0) await update($, rootsA, roots => setStatus(roots, ids, 'running'))
     }
     return next(e)
   })
@@ -332,32 +400,30 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     if (e.agentId !== undefined) return result
 
-    // Close out a step this turn ran.
+    // Close out the steps this turn ran.
     let ids: string[] = []
     await update($, inflightA, list => {
       ids = list.filter(f => f.turnId === e.turnId).flatMap(f => f.stepIds)
       return list.filter(f => f.turnId !== e.turnId)
     })
     if (ids.length > 0) {
-      await update($, rootsA, roots => markDone(roots, ids, e.reason === 'answer' ? 'done' : 'open'))
+      await update($, rootsA, roots => setStatus(roots, ids, e.reason === 'answer' ? 'done' : 'open'))
     }
 
     const turn = await update($, turnA, n => (n ?? 0) + 1)
-    const pending = await read($, pendingA)
+    const pending = (await read($, pendingA)).map(r => ({ ...r, turn }))
     await update($, pendingA, () => [])
     const answer = e.reason === 'answer' ? e.answer : ''
 
-    if (!useModel) {
-      const roots = parseReply(answer).map(p => toRoot(p, turn))
-      await addRoots($, [...roots, ...pending.map(r => ({ ...r, turn }))], autoOpen)
+    if (!useModel || answer.trim().length < minAnswerChars) {
+      await addRoots($, [...parseReply(answer).map(p => toRoot(p, turn)), ...pending])
       return result
     }
-    // A model call takes a moment: do it off the turn's path.
-    $.clock.after(0, () => {
-      void extract($, answer, true).then(parsed =>
-        addRoots($, [...parsed.map(p => toRoot(p, turn)), ...pending.map(r => ({ ...r, turn }))], autoOpen),
-      )
-    })
+
+    // Tool hints now; the model's reading of the reply when it answers.
+    if (pending.length > 0) await addRoots($, pending)
+    await update($, loadingA, () => turn)
+    void modelPass($, answer, turn)
     return result
   })
 
@@ -367,9 +433,8 @@ export const register: Register = (on, options) => {
       if (e.agentId !== undefined || typeof r.text !== 'string' || r.text.length === 0) return r
       const found = parseToolText(r.text)
       if (found.length > 0) {
-        const cmd = String((e as { command?: unknown }).command ?? '').split('\n')[0]!.trim()
-        const source = widthOf(cmd) > 60 ? cmd.slice(0, 57) + '…' : cmd
-        const roots = found.map(p => toRoot({ ...p, title: p.title === 'Hints' ? 'Hints from Bash' : p.title }, 0, source))
+        const cmd = clean(String((e as { command?: unknown }).command ?? '').split('\n')[0] ?? '', 60)
+        const roots = found.map(p => toRoot({ ...p, title: p.title === 'Hints' ? 'Hints from Bash' : p.title }, 0, cmd || undefined))
         await update($, pendingA, list => [...list, ...roots].slice(-8))
       }
       return r
@@ -379,15 +444,8 @@ export const register: Register = (on, options) => {
       const r = await next(e)
       if (e.agentId !== undefined || r.isError || r.deny !== undefined) return r
       const todos = ((e as { todos?: unknown }).todos ?? []) as { content: string; status: string }[]
-      const steps: Step[] = todos.map((t, i) => ({
-        id: `todo.${i}.${keyOf(t.content).slice(0, 40)}`,
-        text: t.content,
-        prompt: promptFor('todo', t.content, []),
-        status: todoStatus(t.status),
-        isCollapsed: false,
-        children: [],
-      }))
-      await setTodoRoot($, 'todo', 'Todo list', steps)
+      const steps = todos.flatMap((t, i) => listStep(`todo.${i}.${keyOf(t.content).slice(0, 40)}`, t.content, todoStatus(t.status)) ?? [])
+      await setListRoot($, 'todo', 'Todo list', steps)
       return r
     }).catch(($, e, next) => next(e))
 
@@ -395,19 +453,10 @@ export const register: Register = (on, options) => {
       const r = await next(e)
       if (e.agentId !== undefined || r.isError || r.deny !== undefined) return r
       const task = (r.result as { task?: { id?: string; subject?: string } } | undefined)?.task
-      const subject = task?.subject ?? String((e as { subject?: unknown }).subject ?? '')
-      if (!task?.id || !subject) return r
-      const roots = await read($, rootsA)
-      const old = roots.find(x => x.id === 'tasks')?.steps ?? []
-      const step: Step = {
-        id: `task.${task.id}`,
-        text: subject,
-        prompt: promptFor('todo', subject, []),
-        status: 'open',
-        isCollapsed: false,
-        children: [],
-      }
-      await setTodoRoot($, 'tasks', 'Tasks', [...old.filter(s => s.id !== step.id), step])
+      const step = task?.id ? listStep(`task.${task.id}`, task.subject ?? String((e as { subject?: unknown }).subject ?? ''), 'open') : undefined
+      if (!step) return r
+      const old = (await read($, rootsA)).find(x => x.id === 'tasks')?.steps ?? []
+      await setListRoot($, 'tasks', 'Tasks', [...old.filter(s => s.id !== step.id), step])
       return r
     }).catch(($, e, next) => next(e))
 
@@ -416,26 +465,60 @@ export const register: Register = (on, options) => {
       if (e.agentId !== undefined || r.isError || r.deny !== undefined) return r
       const input = e as { taskId?: unknown; status?: unknown; subject?: unknown }
       const id = `task.${String(input.taskId ?? '')}`
-      const roots = await read($, rootsA)
-      const old = roots.find(x => x.id === 'tasks')?.steps ?? []
+      const old = (await read($, rootsA)).find(x => x.id === 'tasks')?.steps ?? []
       if (!old.some(s => s.id === id)) return r
       const steps = old.flatMap((s): Step[] => {
         if (s.id !== id) return [s]
         if (input.status === 'deleted') return []
-        const text = typeof input.subject === 'string' ? input.subject : s.text
         const status = typeof input.status === 'string' ? todoStatus(input.status) : s.status
-        return [{ ...s, text, status, prompt: promptFor('todo', text, []) }]
+        return [listStep(s.id, typeof input.subject === 'string' ? input.subject : s.text, status) ?? s]
       })
-      await setTodoRoot($, 'tasks', 'Tasks', steps)
+      await setListRoot($, 'tasks', 'Tasks', steps)
       return r
     }).catch(($, e, next) => next(e))
   }
 
-  // ---- Drawing -------------------------------------------------------------
+  // ---- The row above the prompt: 1/2/3 drafts a step, 0 hides ----------------
+
+  if (showBand) {
+    on('ui.render', { component: 'AbovePrompt' }, async ($, e, next): Promise<RenderElement> => {
+      const below = await next(e)
+      if (e.props.hasSurvey || e.props.isWorking) return below
+      const turn = await read($, turnA)
+      if ((await read($, bandHiddenA)) >= turn) return below
+      const top = topSteps(await read($, rootsA), BAND_ITEMS)
+      if (top.length === 0) return below
+      const { Box, Text, Button } = $.ui.resolve(e)
+      const room = Math.max(12, Math.floor((e.props.bodyColumns - 14) / top.length) - 5)
+      const label = (s: Step) => {
+        const t = plain(s.text).replace(/`/g, '')
+        return widthOf(t) > room ? `${[...t].slice(0, room - 1).join('')}…` : t
+      }
+      return (
+        <Box flexDirection="column">
+          {below}
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+            <Text color="claude">✦ next</Text>
+            {top.map(({ step }, i) => (
+              <Button key={`b:${step.id}`} plain hotkey={String(i + 1)} onPress={() => void click($, step.id)}>
+                {label(step)}
+              </Button>
+            ))}
+            <Button key="b:hide" plain dimColor hotkey="0" onPress={() => void update($, bandHiddenA, () => turn)}>
+              hide
+            </Button>
+          </Box>
+        </Box>
+      )
+    })
+  }
+
+  // ---- The pane ------------------------------------------------------------
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const roots = await read($, rootsA)
+    const isLoading = (await read($, loadingA)) !== 0
     const cols = Math.max(24, e.props.bodyColumns)
     const steps = roots.flatMap(r => allSteps(r.steps))
     const done = steps.filter(s => s.status === 'done').length
@@ -453,20 +536,26 @@ export const register: Register = (on, options) => {
       running: { glyph: '◐', color: 'warning' },
       done: { glyph: '✓', color: 'success' },
     }
+    // The second control on a row does what a click does not.
+    const alt = sendOnClick ? { glyph: '✎', color: 'suggestion' } : { glyph: '▶', color: 'success' }
 
     const rule = <Text dimColor>{'─'.repeat(cols)}</Text>
 
     const header = (
       <Box flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between">
-          <Text>
-            <Text color="claude" bold>
-              ✦ Next steps
+          <Text color="claude" bold>
+            ✦ Next steps
+          </Text>
+          {isLoading ? (
+            <Text color="claude" dimColor>
+              finding steps…
             </Text>
-          </Text>
-          <Text dimColor>
-            {open} open{done > 0 ? ` · ${done} done` : ''}
-          </Text>
+          ) : (
+            <Text dimColor>
+              {open} open{done > 0 ? ` · ${done} done` : ''}
+            </Text>
+          )}
         </Box>
         {rule}
       </Box>
@@ -478,7 +567,7 @@ export const register: Register = (on, options) => {
           {header}
           <Box flexDirection="column" alignItems="center" paddingY={1}>
             <Text color="claude">✦</Text>
-            <Text bold>Nothing queued up</Text>
+            <Text bold>{isLoading ? 'Reading the last reply…' : 'Nothing queued up'}</Text>
             <Text dimColor>When a reply suggests next steps or</Text>
             <Text dimColor>offers to do more, they land here.</Text>
           </Box>
@@ -486,7 +575,7 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const stepRows = (list: Step[], guides: boolean[]): JSX.Element[] =>
+    const stepRows = (root: Root, list: Step[], guides: boolean[]): JSX.Element[] =>
       list.flatMap((step, i) => {
         const isLast = i === list.length - 1
         const lead = ' ' + guides.map(g => (g ? '   ' : '│  ')).join('')
@@ -495,12 +584,11 @@ export const register: Register = (on, options) => {
         const hasKids = step.children.length > 0
         const st = STATUS[step.status]
         const isDone = step.status === 'done'
-        const textW = cols - widthOf(first) - 2 - 2 - 5
+        // Tool output is only ever drafted, so it gets no send control.
+        const hasAlt = !(root.kind === 'tool' && !sendOnClick)
+        const textW = cols - widthOf(first) - 2 - 2 - (hasAlt ? 5 : 3)
         const lines = wrapRuns(runsOf(step.text), textW, 3)
-        const body: (string | JSX.Element)[] = [
-          <Text color={st.color}>{st.glyph}</Text>,
-          ' ',
-        ]
+        const body: (string | JSX.Element)[] = [<Text color={st.color}>{st.glyph}</Text>, ' ']
         lines.forEach((line, n) => {
           if (n > 0) body.push('\n  ')
           for (const run of line) {
@@ -528,20 +616,22 @@ export const register: Register = (on, options) => {
             ) : (
               <Text>{'  '}</Text>
             )}
-            <Button key={`run:${step.id}`} plain hover={{ color: 'claude' }} onPress={() => void runStep($, step.id)}>
+            <Button key={`run:${step.id}`} plain hover={{ color: 'claude' }} onPress={() => void click($, step.id)}>
               {body}
             </Button>
             <Box flexGrow={1} />
-            <Button key={`ed:${step.id}`} plain dimColor hover={{ color: 'suggestion' }} onPress={() => void editStep($, step.id)}>
-              ✎
-            </Button>
-            <Text> </Text>
+            {hasAlt && (
+              <Button key={`alt:${step.id}`} plain dimColor hover={{ color: alt.color }} onPress={() => void other($, step.id)}>
+                {alt.glyph}
+              </Button>
+            )}
+            {hasAlt && <Text> </Text>}
             <Button key={`x:${step.id}`} plain dimColor hover={{ color: 'error' }} onPress={() => void dismissStep($, step.id)}>
               ✕
             </Button>
           </Box>
         )
-        const kids = hasKids && !step.isCollapsed ? stepRows(step.children, [...guides, isLast]) : []
+        const kids = hasKids && !step.isCollapsed ? stepRows(root, step.children, [...guides, isLast]) : []
         if (hasKids && step.isCollapsed) {
           const hidden = allSteps(step.children).filter(s => s.status !== 'done').length
           kids.push(
@@ -556,8 +646,7 @@ export const register: Register = (on, options) => {
 
     const rootBlock = (root: Root, index: number) => {
       const kind = KIND[root.kind]
-      const all = allSteps(root.steps)
-      const left = all.filter(s => s.status !== 'done').length
+      const left = allSteps(root.steps).filter(s => s.status !== 'done').length
       const meta = root.kind === 'todo' ? '' : root.turn > 0 ? ` · turn ${root.turn}` : ''
       const titleW = cols - 4 - 4 - widthOf(meta) - 8
       const title = widthOf(root.title) > titleW ? root.title.slice(0, Math.max(4, titleW - 1)) + '…' : root.title
@@ -571,12 +660,10 @@ export const register: Register = (on, options) => {
               <Text dimColor>{meta}</Text>
             </Button>
             <Box flexGrow={1} />
-            <Text color={left === 0 ? 'success' : kind.color}>
-              {left === 0 ? '✓ ' : `${left} `}
-            </Text>
+            <Text color={left === 0 ? 'success' : kind.color}>{left === 0 ? '✓ ' : `${left} `}</Text>
             {left > 0 && (
-              <Button key={`ra:${root.id}`} plain dimColor hover={{ color: 'success' }} onPress={() => void runRoot($, root.id)}>
-                ▶
+              <Button key={`ra:${root.id}`} plain dimColor hover={{ color: 'success' }} onPress={() => void actOnRoot($, root.id)}>
+                {root.kind === 'tool' ? '✎' : '▶'}
               </Button>
             )}
             <Text> </Text>
@@ -589,12 +676,15 @@ export const register: Register = (on, options) => {
               {'   '}$ {root.source}
             </Text>
           )}
-          {!root.isCollapsed && stepRows(root.steps, [])}
+          {!root.isCollapsed && stepRows(root, root.steps, [])}
         </Box>
       )
     }
 
     const anyExpanded = roots.some(r => !r.isCollapsed)
+    const hint = sendOnClick
+      ? 'Click a step to send it · ✎ edit first · ▶ send group · ✕ dismiss'
+      : 'Click a step to draft it · ▶ send now · ▶ on a group sends it all · ✕ dismiss'
 
     return (
       <Box flexDirection="column">
@@ -615,7 +705,7 @@ export const register: Register = (on, options) => {
               Clear all
             </Button>
           </Box>
-          <Text dimColor>Click a step to run it · ▶ run group · ✎ edit first · ✕ dismiss</Text>
+          <Text dimColor>{hint}</Text>
         </Box>
       </Box>
     )

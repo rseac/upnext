@@ -40,6 +40,10 @@ declare module 'claude-code' {
       inflight: Shaped<Inflight[]>
       turn: number
       isClosedByPerson: boolean
+      /** The turn whose steps the model is still finding; 0 when none. */
+      loadingTurn: number
+      /** The 1/2/3 row above the prompt stays hidden through this turn. */
+      bandHiddenTurn: number
     }
   }
 }
