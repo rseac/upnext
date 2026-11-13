@@ -146,6 +146,8 @@ The row under the mouse lights up. Every symbol is one herdr draws one cell wide
 
 Steps found in Bash output are only ever drafted, never sent straight away (their group shows ✎ instead of ▶), since that output can come from anywhere.
 
+**Ticked off for you:** after a `git commit`, open steps the commit message clearly covers get ✓. After a test run that passes, steps like "fix the failing test" or "run the tests" get ✓. A toast says what was ticked. Turn this off with `autoTick`.
+
 The status mark shows progress: ○ open, ◌ queued, ◐ running, ⇶ with a background agent, ✓ done, ✗ not done.
 
 When a step's turn ends, it gets ✓, or ✗ if the reply says it couldn't finish. In `auto` and `model` mode, a fork then checks the work and corrects the mark if needed. Steps also track prompts you type yourself: if what you type clearly matches an open step, that step is marked too.
@@ -184,6 +186,7 @@ Step text comes from replies and tool output, which can quote files and web page
 | `keepAcrossSessions` | `true` | Saves open steps per project folder and restores them. |
 | `autoOpen` | `true` | Opens the pane when new steps arrive. |
 | `scanToolOutput` | `true` | Reads Bash output and todo/task lists too. |
+| `autoTick` | `true` | Ticks steps off after a commit that covers them, or a test run that passes. |
 | `paneStyle` | `auto` | `auto`: inside herdr, draw the tree in a herdr pane; elsewhere, the pane inside Claude. `claude`: always the pane inside Claude (`/upnext herdr` still works). |
 | `herdrLabel` | `true` | Inside herdr, shows the open count as the title of Claude's pane. |
 | `herdrGlyphs` | `symbols` | `ascii` draws the herdr pane with plain characters. |

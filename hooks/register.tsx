@@ -49,7 +49,10 @@ const cfg = {
   extractor: 'auto' as 'heuristic' | 'auto' | 'model',
   minAnswerChars: 80,
   nudgeAfter: 10,
+  autoTick: true,
   cwd: '',
+  /** The session's folder, whether or not steps are kept across sessions. */
+  sessionCwd: '',
 }
 
 // ---- Looks: a glyph and colour per kind of group, and a colour per stream ----
@@ -1050,6 +1053,63 @@ async function afterClear($: EngineInterface) {
   )
 }
 
+// ---- Ticking steps off from what happened: commits, and test runs that pass ----
+
+const COMMIT = /\bgit\b[^|;&\n]*\bcommit\b/
+const TEST_RUN =
+  /\b(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|pytest|cargo\s+test|go\s+test|jest|vitest|mocha|make\s+(?:test|check)|claude\s+plugin\s+test|ctest|mvn\s+test|gradlew?\s+test|rtk\s+test|tox|rspec|phpunit|dotnet\s+test)\b/
+const TEST_FAILED = /\b[1-9]\d*\s+(?:fail(?:s|ed|ing|ures?)?|errors?)\b|\bFAIL(?:ED)?\b|\bTraceback\b|\bpanicked\b|\(fail\)/
+// Steps a passing test run finishes: "fix the failing test", "get the tests green", "run the tests".
+const TEST_STEP =
+  /\b(?:fix|get|make)\b.*\b(?:fail(?:ing|ed|ures?)?|broken|red|flaky)\b.*\btests?\b|\btests?\b.*\b(?:pass(?:ing)?|green)\b|^(?:re-?)?run (?:the )?(?:full |whole |unit |integration )?(?:tests?|test suite|suite)\b/i
+
+/** Open steps a commit message clearly covers: most of the step's words are in it. */
+function coveredBy(roots: Root[], message: string): Step[] {
+  const said = words(message)
+  return live(roots)
+    .filter(r => r.kind !== 'tool' && r.kind !== 'likely')
+    .flatMap(r => allSteps(r.steps))
+    .filter(s => {
+      if (s.status === 'done' || s.agentId !== undefined || s.children.some(isOpen)) return false
+      const own = words(s.text)
+      if (own.size < 2) return false
+      let shared = 0
+      for (const w of own) if (said.has(w)) shared += 1
+      return shared / own.size >= 0.75
+    })
+}
+
+async function tick($: EngineInterface, steps: Step[], why: string) {
+  if (steps.length === 0) return
+  const ids = steps.map(s => s.id)
+  await changeRoots($, roots => mapAll(roots, s => (ids.includes(s.id) ? { ...s, status: 'done' } : s)))
+  const first = plain(steps[0]!.text).slice(0, 50)
+  $.ui.toast(`upnext: ✓ ${first}${steps.length > 1 ? ` and ${steps.length - 1} more` : ''} (${why})`)
+}
+
+/** After a Bash call: a commit ticks the steps its message covers; a passing test run, test steps. */
+async function tickFromBash($: EngineInterface, command: string, output: string, isError: boolean) {
+  if (isError) return
+  const roots = await read($, rootsA)
+  if (COMMIT.test(command) && !/\b(?:nothing to commit|no changes added)\b/.test(output)) {
+    let message = ''
+    try {
+      const r = await $.process.run(['git', 'log', '-1', '--format=%B'], { cwd: cfg.sessionCwd || undefined, timeoutMs: 5000 })
+      if (r.exitCode === 0) message = r.stdout
+    } catch {
+      message = ''
+    }
+    if (message.trim() !== '') await tick($, coveredBy(roots, message), 'committed')
+    return
+  }
+  if (TEST_RUN.test(command) && !TEST_FAILED.test(output)) {
+    const steps = live(roots)
+      .flatMap(r => allSteps(r.steps))
+      .filter(s => (s.status === 'open' || s.status === 'failed') && s.agentId === undefined && TEST_STEP.test(plain(s.text)))
+    await tick($, steps, 'tests passed')
+  }
+}
+
 // ---- Compaction: the summary keeps what open steps refer to ----------------
 
 /** At most this many open steps are named to the summarizer; the rest become "earlier". */
@@ -1286,6 +1346,7 @@ export const register: Register = (on, options) => {
   cfg.extractor = options.extractor === 'heuristic' || options.extractor === 'model' ? options.extractor : 'auto'
   cfg.minAnswerChars = typeof options.minAnswerChars === 'number' ? options.minAnswerChars : 80
   cfg.nudgeAfter = typeof options.nudgeAfter === 'number' ? options.nudgeAfter : 10
+  cfg.autoTick = options.autoTick !== false
   const scanTools = options.scanToolOutput !== false
   const showBand = options.band !== false
   const keepAcrossSessions = options.keepAcrossSessions !== false
@@ -1303,6 +1364,7 @@ export const register: Register = (on, options) => {
     herdr.inside = (await $.env.get('HERDR_PANE_ID').catch(() => undefined)) ?? ''
     herdr.pane = useHerdr ? herdr.inside : ''
     herdr.cwd = e.cwd
+    cfg.sessionCwd = e.cwd
     if (herdr.inside !== '') {
       herdr.bin = (await $.env.get('HERDR_BIN_PATH').catch(() => undefined)) || 'herdr'
       const home = (await $.env.get('HOME').catch(() => undefined)) ?? ''
@@ -1481,6 +1543,18 @@ export const register: Register = (on, options) => {
     await nudge($, turn)
     return result
   })
+
+  if (cfg.autoTick) {
+    on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+      const r = await next(e)
+      if (e.agentId !== undefined || r.deny !== undefined) return r
+      const command = String((e as { command?: unknown }).command ?? '')
+      if (COMMIT.test(command) || TEST_RUN.test(command)) {
+        await tickFromBash($, command, typeof r.text === 'string' ? r.text : '', r.isError === true).catch(() => undefined)
+      }
+      return r
+    }).catch(($, e, next) => next(e))
+  }
 
   if (scanTools) {
     on('tool.call', { tool: 'Bash' }, async ($, e, next) => {

@@ -1,6 +1,6 @@
 {
   "name": "upnext",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
   "author": {
     "name": "rseac"
@@ -49,6 +49,12 @@
       "title": "Nudge about idle streams after this many turns",
       "description": "When a stream with open steps has had no new or finished steps for this many turns, a toast says so once, so you can pick it up or archive it. 0 turns this off.",
       "default": 10
+    },
+    "autoTick": {
+      "type": "boolean",
+      "title": "Tick steps off from commits and passing tests",
+      "description": "After a git commit, marks open steps its message clearly covers as done; after a test run that passes, marks steps like \"fix the failing test\" or \"run the tests\" as done. A toast says what was ticked.",
+      "default": true
     },
     "band": {
       "type": "boolean",
