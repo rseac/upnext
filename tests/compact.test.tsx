@@ -62,6 +62,8 @@ test('steps past the first fifteen become "earlier" once the compaction is done'
   await $.session.compact({ trigger: 'auto', messages: MESSAGES })
 
   const ui = await $.ui.mount(PANE)
+  // Twenty open steps: "everything else" is folded under the ranked ones.
+  await ui.press({ key: 'all-tg' })
   const runs = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('run:'))
   const last = runs.find(b => b.text?.includes('Fix old bug 10'))!
   await ui.press({ key: last.key! })

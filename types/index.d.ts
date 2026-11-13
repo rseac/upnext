@@ -48,6 +48,15 @@ export type Root = {
   nudgedTurn?: number
 }
 
+/** A model's ranking of the open steps: the most important first, each with why. */
+export type Ranking = {
+  ids: string[]
+  why: Record<string, string>
+  /** The open steps the model saw, so steps that arrived since can be told apart. */
+  seen: string[]
+  turn: number
+}
+
 /** A prompt the pane sent (or put in the prompt box), waiting for its turn to finish. */
 export type Inflight = {
   stepIds: string[]
@@ -92,6 +101,10 @@ declare module 'claude-code' {
       cursor: string | null
       /** Steps marked to run together (m), in the order marked. */
       marked: string[]
+      rank: Shaped<Ranking | null>
+      isRanking: boolean
+      /** Whether "Everything else" is shown under the ranked steps; null: shown while short. */
+      showAll: boolean | null
     }
   }
 }

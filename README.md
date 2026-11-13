@@ -46,6 +46,27 @@ This repository is private, so before installing:
 1. Ask the owner to invite you as a collaborator on GitHub, and accept the invite.
 2. Make sure your machine has a git credential for github.com: an SSH key, or `gh auth login` then `gh auth setup-git`. The install never asks for one.
 
+## Most important first
+
+The pane answers one question first: *what matters most right now?* Up to five steps lead, each with why:
+
+```
+ Most important                          p re-rank
+ 1 ✗ Document the --quiet flag      ● Docs  ➜ ▶ ✕
+     tried before and still failing
+ 2 ○ Fix the crash on startup       ● Auth  ➜ ▶ ✕
+     users hit it on every launch
+ ▸ everything else · 12
+```
+
+How they're picked, cheapest first:
+
+1. **Free, every turn:** a score from what the mod already knows: a step that didn't get done (✗), failing tests, what you asked for in your own prompts, words like *broken*, *security* or *before merging*, being first in Claude's list, new this turn. Words like *optional* or *idea* rank lower.
+2. **Haiku, when new steps arrive** and four or more are open: it gets a short brief (the open steps, your last few prompts, the start of the last reply, failing test lines), a few thousand tokens to a small model, never a copy of the conversation. Turns that add no steps cost nothing.
+3. **On demand:** `p` re-ranks at any time.
+
+Everything else stays under **everything else**, folded once more than eight steps are open (`e` unfolds). The 1/2/3 row, ghost text and herdr's sidebar line all use the ranking. Set `rank` to `local` for the free score only, or `off` for the plain list.
+
 ## Where steps come from
 
 At the end of each turn the mod reads:
@@ -177,6 +198,7 @@ The row under the mouse lights up.
 | `1`–`9` | Drafts that numbered step (with the pane focused: click it, or ctrl+x tab). |
 | `j` `k`, then `d` `s` `x` | Move the highlight (›), then draft, send or drop the highlighted step. |
 | `m`, then `r` | Mark steps (◆) in any streams, then run them in order, one per turn. `u` clears the marks. |
+| `p` / `e` | Re-rank the most important steps / show or fold everything else. |
 | `z` / `c` / `t` | Fold all / clear done / tidy. `q` stops a run in order. |
 
 Steps found in Bash output are only ever drafted, never sent straight away (their group shows ✎ instead of ▶), since that output can come from anywhere.
@@ -223,6 +245,7 @@ Step text comes from replies and tool output, which can quote files and web page
 | `autoOpen` | `true` | Opens the pane when new steps arrive. |
 | `scanToolOutput` | `true` | Reads Bash output and todo/task lists too. |
 | `autoTick` | `true` | Ticks steps off after a commit that covers them, or a test run that passes. |
+| `rank` | `auto` | `auto`: free scoring every turn, plus a Haiku re-rank when new steps arrive. `local`: free scoring only. `off`: no ranked section. |
 | `paneStyle` | `auto` | `auto`: inside herdr, a popup on a key and a sidebar line; elsewhere, the pane inside Claude. `split`: inside herdr, a pane beside Claude's that stays open. `claude`: always the pane inside Claude (`/upnext herdr` still works). |
 | `herdrLabel` | `true` | Inside herdr, sets the sidebar line (`upnext` token) and the title of Claude's pane. |
 | `herdrGlyphs` | `symbols` | `ascii` draws the herdr pane with plain characters. |

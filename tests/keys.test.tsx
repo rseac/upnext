@@ -46,32 +46,32 @@ test('a number drafts that step; j moves the highlight, s sends it, x drops it',
   const ui = await $.ui.mount(PANE)
   const numbers = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('n:'))
   expect(numbers.length).toBe(3)
-  // In view order: Rotate (1), Audit (2), Document (3).
+  // Ranked: each list's first step before a second one: Rotate (1), Document (2), Audit (3).
   await ui.press({ key: numbers[0]!.key! })
   expect(drafted.at(-1)).toBe('Rotate the signing key')
 
   await ui.press({ key: 'k-down' })
   await ui.press({ key: 'k-send' })
-  expect(sent.at(-1)).toBe('Audit the token store')
+  expect(sent.at(-1)).toBe('Document the new flag')
   await ui.press({ key: 'k-down' })
   await ui.press({ key: 'k-drop' })
-  expect((await ui.findAll({ type: 'Button', text: /Document the new flag/ })).length).toBe(0)
+  expect((await ui.findAll({ type: 'Button', text: /Audit the token store/ })).length).toBe(0)
   await ui.unmount()
 })
 
-test('m marks steps across streams; r runs the marked ones in order', async ($, on) => {
+test('m marks steps; r runs the marked ones in order', async ($, on) => {
   const { sent } = engine(on)
   await $.session.start({ cwd: '/n2', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'k-mark' }) // the first step: Rotate the signing key (Auth); m moves on
   await ui.press({ key: 'k-down' })
-  await ui.press({ key: 'k-mark' }) // Document the new flag (Docs)
+  await ui.press({ key: 'k-mark' }) // Audit the token store (Auth)
   expect((await ui.findAll({ type: 'Button', text: /run 2 marked/ })).length).toBe(1)
   await ui.press({ key: 'k-run' })
   expect(sent).toEqual(['Rotate the signing key'])
   await $.turn.start({ text: 'Rotate the signing key', turnId: 't2' } as never)
   await $.turn.complete({ ...TURN, answer: 'Rotated the signing key and updated the config.', turnId: 't2' })
-  expect(sent).toEqual(['Rotate the signing key', 'Document the new flag'])
+  expect(sent).toEqual(['Rotate the signing key', 'Audit the token store'])
   await ui.unmount()
 })

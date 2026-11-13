@@ -1,6 +1,6 @@
 {
   "name": "upnext",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
   "author": {
     "name": "rseac"
@@ -36,6 +36,17 @@
         "auto",
         "heuristic",
         "model"
+      ]
+    },
+    "rank": {
+      "type": "string",
+      "title": "How to pick the most important steps",
+      "description": "auto: score open steps for free every turn (failed before, failing tests, what you asked for, wording, recency), and when new steps arrive with four or more open, have Haiku re-rank them from a short brief (no copy of the conversation). p re-ranks on demand. local: the free score only. off: no ranked section, the plain list.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "local",
+        "off"
       ]
     },
     "minAnswerChars": {

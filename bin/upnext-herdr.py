@@ -92,7 +92,7 @@ ASCII = {
     "more": "...",
 }
 
-HELP = "1-9 draft · j/k move · enter draft · s send · h agent · m mark · x drop · a archive · q quit"
+HELP = "1-9 draft · j/k move · enter draft · s send · h agent · m mark · x drop · p re-rank · e everything else · q quit"
 HELP_ASCII = HELP
 
 
@@ -231,6 +231,7 @@ class Viewer:
         self.popup = popup
         self.picker = None  # {"ids", "text", "agents": [(pane, label)], "error"}
         self.marked = []  # step ids, in the order marked
+        self.show_all = None  # "everything else" under the ranked steps; None: shown while short
         self.numbered = []  # step ids by number (1-based), open steps in view order
         self.done = False
         self.g = ASCII if ascii_only else FANCY
@@ -289,6 +290,60 @@ class Viewer:
         self.rows = []
         self.numbered = []
         roots = self.state.get("roots", [])
+        by_id = {s.get("id"): (r, s) for r in roots for s in r.get("steps", [])}
+        open_count = sum(1 for r in roots for s in r.get("steps", []) if s.get("status") in ("open", "failed"))
+        top = [t for t in self.state.get("top", []) if t.get("id") in by_id]
+        has_top = len(top) >= 2 and open_count >= 3
+        ranked_ids = {t["id"] for t in top} if has_top else set()
+        show_tree = not has_top or (self.show_all if self.show_all is not None else open_count <= 8)
+        if has_top:
+            head = Line()
+            head.add(" Most important", fg=COLORS["claude"], bold=True)
+            head.pad_to(cols - 8)
+            head.add("p re-rank", dim=True)
+            lines.append(head)
+            for t in top:
+                r, s = by_id[t["id"]]
+                sid = s.get("id")
+                st = s.get("status", "open")
+                self.numbered.append(sid)
+                num = len(self.numbered)
+                self.rows.append(("step", r, s))
+                row = len(self.rows) - 1
+                is_marked = sid in self.marked
+                color = COLORS.get(r.get("color"))
+                tag = clip(safe(r.get("title", "")), 14, g["more"])
+                draft = ("draft", sid)
+                line = Line(row)
+                line.add(f" {num} " if num <= 9 else "   ", draft, fg=COLORS["claude"], bold=True)
+                if is_marked:
+                    line.add("◆ " if g is FANCY else "* ", draft, fg=179, bold=True)
+                line.add(g.get(st, g["open"]), draft, fg=STATUS_COLOR.get(st))
+                line.add(" ", draft)
+                text_w = max(8, cols - line.width - cells(tag) - 3 - 7)
+                text = clip(" ".join(w for w, _ in words_of(safe(s.get("text", "")))), text_w, g["more"])
+                line.add(text, draft, bold=True)
+                line.pad_to(cols - 7 - cells(tag) - 2)
+                line.add(g["stream"] + " ", fg=color)
+                line.add(tag, fg=color, dim=True)
+                line.pad_to(cols - 6)
+                line.add(" ")
+                line.add(g["hand"], ("hand", sid), dim=True, hot=141)
+                line.add(" ")
+                line.add(g["send"], ("send", sid), dim=True, hot=71)
+                line.add(" ")
+                line.add(g["drop"], ("dismiss", sid), dim=True, hot=167)
+                lines.append(line)
+                why = safe(t.get("why", ""))
+                if why:
+                    lines.append(Line(row).add("      " + clip(why, cols - 7, g["more"]), dim=True))
+            rest = open_count - len(top)
+            if rest > 0:
+                lines.append(Line())
+                lines.append(Line().add(f" {g['unfolded'] if show_tree else g['folded']} everything else · {rest}", ("all", ""), dim=True))
+            if not show_tree:
+                return lines
+            lines.append(Line())
         for ri, r in enumerate(roots):
             if ri > 0:
                 lines.append(Line())
@@ -351,9 +406,9 @@ class Viewer:
                 text_fg = {"queued": 105, "running": 179, "failed": 167, "done": 71}.get(st)
                 if text_fg is None and s.get("isCommand"):
                     text_fg = CODE
-                if st in ("open", "failed"):
+                if st in ("open", "failed") and sid not in ranked_ids:
                     self.numbered.append(sid)
-                num = len(self.numbered) if st in ("open", "failed") else None
+                num = len(self.numbered) if st in ("open", "failed") and sid not in ranked_ids else None
                 is_marked = sid in self.marked
                 text_w = max(8, cols - cells(lead + branch) - 2 - 7 - 2 - (2 if is_new else 0) - (2 if is_marked else 0))
                 texts = wrap_words(words_of(safe(s.get("text", ""))), text_w, 3, g["more"])
@@ -511,6 +566,9 @@ class Viewer:
         verb, target = zone
         if verb == "toggle":
             self.folded.symmetric_difference_update({target})
+        elif verb == "all":
+            open_count = sum(1 for r in self.state.get("roots", []) for s in r.get("steps", []) if s.get("status") in ("open", "failed"))
+            self.show_all = not (self.show_all if self.show_all is not None else open_count <= 8)
         elif verb == "pick":
             self.pick(target)
         elif verb == "hand":
@@ -595,6 +653,10 @@ class Viewer:
             self.cursor = min(self.cursor + 1, max(0, len(self.rows) - 1))
         elif k == "u":
             self.marked = []
+        elif k == "e":
+            self.run_zone(("all", ""))
+        elif k == "p":
+            self.act("rank", "", "re-ranking…")
         elif k == "r" and self.marked:
             self.act("run-marked", self.marked[0], f"running {len(self.marked)} steps in order", ids=list(self.marked))
             self.marked = []

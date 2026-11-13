@@ -129,14 +129,15 @@ test("the model's choice of stream is followed", async ($, on) => {
   await ui.unmount()
 })
 
-test('the 1/2/3 row offers the top step of each stream first', async ($, on) => {
+test('the 1/2/3 row offers the most important steps first', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/s4', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, answer: '## Auth follow-ups\n- Rotate the signing key\n- Audit the token store', turnId: 't1' })
   await $.turn.complete({ ...TURN, answer: '## Docs follow-ups\n- Document the new CLI flags\n- Fix broken README links', turnId: 't2' })
   const ui = await $.ui.mount(BAND as never)
   const labels = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('b:') && b.key !== 'b:hide').map(b => b.text)
-  expect(labels).toEqual(['● Document the new CLI flags', '● Rotate the signing key', '● Fix broken README links'])
+  // "Fix broken…" fixes something broken; then each stream's first step.
+  expect(labels).toEqual(['● Fix broken README links', '● Document the new CLI flags', '● Rotate the signing key'])
   await ui.unmount()
 })
 

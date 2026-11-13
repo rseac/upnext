@@ -4,7 +4,7 @@
 
 id = "upnext"
 name = "Up next"
-version = "0.16.0"
+version = "0.17.0"
 min_herdr_version = "0.9.0"
 description = "The next steps Claude suggested, as a popup: click or press a key to draft, send or hand one to another agent."
 platforms = ["linux", "macos"]
