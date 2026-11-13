@@ -66,7 +66,7 @@ test('a turn fills the pane; a click drafts, ▶ sends', async ($, on) => {
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: /⬢/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /●/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /cover nested lists/ })).toBeDefined()
     await ui.unmount()
   }

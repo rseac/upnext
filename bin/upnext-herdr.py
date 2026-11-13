@@ -45,7 +45,7 @@ STATUS_COLOR = {"open": 245, "queued": 105, "running": 179, "done": 71, "failed"
 
 FANCY = {
     "title": "✦",
-    "stream": "⬢",
+    "stream": "●",
     "group": "◆",
     "open": "○",
     "queued": "◌",
@@ -124,6 +124,53 @@ def wrap(text, width, max_lines=3, more="…"):
     return lines
 
 
+CODE = 75  # blue: `code` and slash commands, what will actually run
+GREY = 245
+
+
+def words_of(text):
+    """Words with whether each is inside `backticks` (the backticks dropped)."""
+    out, word, code, is_code = [], "", False, False
+    for c in text:
+        if c == "`":
+            code = not code
+            continue
+        if c.isspace():
+            if word:
+                out.append((word, is_code))
+            word = ""
+            continue
+        if not word:
+            is_code = code
+        word += c
+    if word:
+        out.append((word, is_code))
+    return out
+
+
+def wrap_words(words, width, max_lines=3, more="…"):
+    """Lines of (word, is_code), each line at most `width` cells."""
+    lines, line, used = [], [], 0
+    for w, code in words:
+        w = clip(w, width, more)
+        need = cells(w) + (1 if line else 0)
+        if line and used + need > width:
+            lines.append(line)
+            line, used = [], 0
+            need = cells(w)
+        line.append((w, code))
+        used += need
+    if line:
+        lines.append(line)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        last = lines[-1]
+        while last and sum(cells(w) + 1 for w, _ in last) + cells(more) > width:
+            last.pop()
+        last.append((more, False))
+    return lines or [[]]
+
+
 def safe(text):
     """Printable text only: the mod cleans it already; this is the second lock."""
     return "".join(c for c in str(text) if c.isprintable())
@@ -159,11 +206,13 @@ class Line:
             base = f"{ESC}48;5;236m"
         for text, st in self.parts:
             codes = []
-            if st.get("fg") is not None:
-                codes.append(f"38;5;{st['fg']}")
+            hot = highlight is not None and st.get("hot") is not None
+            fg = st["hot"] if hot else st.get("fg")
+            if fg is not None:
+                codes.append(f"38;5;{fg}")
             if st.get("bold"):
                 codes.append("1")
-            if st.get("dim"):
+            if st.get("dim") and not hot:
                 codes.append("2")
             if st.get("strike"):
                 codes.append("9")
@@ -232,31 +281,35 @@ class Viewer:
             if ri > 0:
                 lines.append(Line())
             rid = r.get("id")
-            color = COLORS.get(r.get("color"))
+            idle = bool(r.get("isIdle"))
+            color = GREY if idle else COLORS.get(r.get("color"))
             steps = r.get("steps", [])
             left = sum(1 for s in steps if s.get("status") != "done")
             folded = rid in self.folded
             self.rows.append(("root", r, None))
             row = len(self.rows) - 1
             line = Line(row)
-            buttons = [(g["send"], ("send-all", rid)), (g["archive"], ("archive", rid)), (g["drop"], ("dismiss", rid))]
+            buttons = [(g["send"], ("send-all", rid), 71), (g["archive"], ("archive", rid), 179), (g["drop"], ("dismiss", rid), 167)]
             if r.get("kind") != "stream":
                 buttons = [b for b in buttons if b[1][0] != "archive"]
             right = 2 * len(buttons) + 1
             count = f"{left}" if left else g["done"]
-            name_w = max(4, cols - 5 - right - cells(count) - 2)
+            tag = " idle" if idle else ""
+            name_w = max(4, cols - 5 - right - cells(count) - 2 - len(tag))
             name = clip(safe(r.get("title", "")), name_w, g["more"])
             fold = ("toggle", rid)
-            line.add(" " + (g["folded"] if folded else g["unfolded"]) + " ", fold, dim=True)
+            line.add(" " + (g["folded"] if folded else g["unfolded"]) + " ", fold, fg=color, dim=True)
             line.add(g["stream"] if r.get("kind") == "stream" else g["group"], fold, fg=color)
             line.add(" ", fold)
-            line.add(name, fold, bold=True)
+            line.add(name, fold, fg=color, bold=not idle)
+            if tag:
+                line.add(tag, fold, fg=GREY, dim=True)
             line.add("  ")
-            line.add(count, fg=STATUS_COLOR["done"] if not left else color, dim=bool(left))
+            line.add(count, fg=STATUS_COLOR["done"] if not left else color, dim=False)
             line.pad_to(cols - right)
-            for glyph, zone in buttons:
+            for glyph, zone, hot in buttons:
                 line.add(" ")
-                line.add(glyph, zone, dim=True)
+                line.add(glyph, zone, dim=True, hot=hot)
             lines.append(line)
             if folded:
                 continue
@@ -280,24 +333,36 @@ class Viewer:
                 row = len(self.rows) - 1
                 st = s.get("status", "open")
                 sid = s.get("id")
-                text_w = max(8, cols - cells(lead + branch) - 2 - 5)
-                texts = wrap(safe(s.get("text", "")), text_w, 3, g["more"])
-                for n, t in enumerate(texts):
+                is_new = bool(s.get("isNew"))
+                is_done = st == "done"
+                # The text's colour says its state; commands are blue, as code is.
+                text_fg = {"queued": 105, "running": 179, "failed": 167, "done": 71}.get(st)
+                if text_fg is None and s.get("isCommand"):
+                    text_fg = CODE
+                text_w = max(8, cols - cells(lead + branch) - 2 - 5 - (2 if is_new else 0))
+                texts = wrap_words(words_of(safe(s.get("text", ""))), text_w, 3, g["more"])
+                draft = ("draft", sid)
+                for n, words in enumerate(texts):
                     line = Line(row)
-                    draft = ("draft", sid)
                     if n == 0:
-                        line.add(lead + branch, dim=True)
+                        line.add(lead + branch, fg=color, dim=True)
                         line.add(g.get(st, g["open"]), draft, fg=STATUS_COLOR.get(st))
                         line.add(" ", draft)
                     else:
-                        line.add(cont + "  ", dim=True)
-                    line.add(t, draft, dim=st == "done", strike=st == "done")
+                        line.add(cont + "  ", fg=color, dim=True)
+                    for k, (w, code) in enumerate(words):
+                        if k:
+                            line.add(" ", draft, strike=is_done)
+                        fg = CODE if code and not is_done else text_fg
+                        line.add(w, draft, fg=fg, dim=is_done, strike=is_done, bold=is_new)
+                    if n == 0 and is_new:
+                        line.add(" •", draft, fg=color, bold=True)
                     if n == 0:
                         line.pad_to(cols - 4)
                         line.add(" ")
-                        line.add(g["send"], ("send", sid), dim=True)
+                        line.add(g["send"], ("send", sid), dim=True, hot=71)
                         line.add(" ")
-                        line.add(g["drop"], ("dismiss", sid), dim=True)
+                        line.add(g["drop"], ("dismiss", sid), dim=True, hot=167)
                     lines.append(line)
         return lines
 
@@ -307,13 +372,25 @@ class Viewer:
         cols = max(24, cols - 1)
         g = self.g
         roots = self.state.get("roots", [])
-        open_n = sum(1 for r in roots for s in r.get("steps", []) if s.get("status") != "done")
+        every = [s.get("status", "open") for r in roots for s in r.get("steps", [])]
+        counts = [
+            (f"{every.count('open') + every.count('queued')} open", None, True),
+            (f"{every.count('running')} running", STATUS_COLOR["running"], False),
+            (f"{every.count('failed')} {g['failed']}", STATUS_COLOR["failed"], False),
+        ]
+        counts = [c for i, c in enumerate(counts) if i == 0 or not c[0].startswith("0 ")]
 
         head = Line()
         head.add(f" {g['title']} Up next", fg=COLORS["claude"], bold=True)
-        count = "finding steps" + g["more"] if self.state.get("loading") else f"{open_n} open"
-        head.pad_to(cols - cells(count))
-        head.add(count, dim=True)
+        # Fewer counts when the pane is narrow.
+        while len(counts) > 1 and 11 + sum(cells(t) + 3 for t, _, _ in counts) > cols:
+            counts.pop()
+        width = sum(cells(t) for t, _, _ in counts) + 3 * (len(counts) - 1)
+        head.pad_to(cols - width)
+        for i, (t, fg, dim) in enumerate(counts):
+            if i:
+                head.add(" · ", dim=True)
+            head.add(t, fg=fg, dim=dim)
         rule = Line().add(g["rule"] * cols, dim=True)
 
         body = self.build(cols)

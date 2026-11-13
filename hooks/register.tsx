@@ -58,11 +58,11 @@ const KIND: Record<RootKind, { glyph: string; color: string }> = {
   reply: { glyph: '✦', color: 'claude' },
   offer: { glyph: '◇', color: 'suggestion' },
   tool: { glyph: '❯', color: 'bashBorder' },
-  // Not ☰: herdr and some other terminals draw it two cells wide.
+  // Not ☰ (two cells in herdr), ⬢ or ⎘ (missing from common mono fonts).
   todo: { glyph: '☐', color: 'planMode' },
   likely: { glyph: '➜', color: 'remember' },
   mine: { glyph: '✚', color: 'ide' },
-  stream: { glyph: '⬢', color: 'claude' },
+  stream: { glyph: '●', color: 'claude' },
 }
 
 // Theme keys, so the colours follow the person's theme. 'ide' is kept for "Your steps".
@@ -1031,22 +1031,39 @@ async function herdrRun($: EngineInterface, args: string[]): Promise<string | un
   }
 }
 
-type FlatStep = { id: string; text: string; status: StepStatus; depth: number }
+type FlatStep = { id: string; text: string; status: StepStatus; depth: number; isNew: boolean; isCommand: boolean }
 
-const flatSteps = (steps: Step[], depth = 0): FlatStep[] =>
+/** Steps in tree order; `text` keeps `code` in backticks for the viewer to colour. */
+const flatSteps = (steps: Step[], turn: number, depth = 0): FlatStep[] =>
   steps.flatMap(s => [
-    { id: s.id, text: plain(s.text).replace(/`/g, ''), status: s.agentId !== undefined ? 'running' : s.status, depth },
-    ...(s.isCollapsed ? [] : flatSteps(s.children, depth + 1)),
+    {
+      id: s.id,
+      text: plain(s.text),
+      status: s.agentId !== undefined ? 'running' : s.status,
+      depth,
+      isNew: s.addedTurn !== undefined && s.addedTurn === turn && s.status === 'open',
+      isCommand: commandOf(s.text) !== undefined,
+    },
+    ...(s.isCollapsed ? [] : flatSteps(s.children, turn, depth + 1)),
   ])
 
 /** Writes what the viewer draws, and the count on Claude's pane, when either changed. */
 async function herdrSync($: EngineInterface, roots: Root[]) {
   if (herdr.pane === '' || herdr.dir === '') return
   const shown = live(roots)
+  const turn = await read($, turnA)
+  const isIdle = (r: Root) => r.kind === 'stream' && cfg.nudgeAfter > 0 && r.turn > 0 && turn - r.turn >= cfg.nudgeAfter
   const state = {
     version: 1,
     claudePane: herdr.pane,
-    roots: shown.map(r => ({ id: r.id, kind: r.kind, title: plain(r.title), color: colorOf(r), steps: flatSteps(r.steps) })),
+    roots: shown.map(r => ({
+      id: r.id,
+      kind: r.kind,
+      title: plain(r.title).replace(/`/g, ''),
+      color: colorOf(r),
+      isIdle: isIdle(r),
+      steps: flatSteps(r.steps, turn),
+    })),
   }
   const text = JSON.stringify(state)
   if (text !== herdr.lastState) {
@@ -1475,7 +1492,7 @@ export const register: Register = (on, options) => {
       failed: { glyph: '✗', color: 'error' },
     }
     // The second control on a row does what a click does not.
-    const alt = cfg.sendOnClick ? { glyph: '⎘', color: 'suggestion' } : { glyph: '▶', color: 'success' }
+    const alt = cfg.sendOnClick ? { glyph: '✐', color: 'suggestion' } : { glyph: '▶', color: 'success' }
 
     const rule = <Text dimColor>{'─'.repeat(cols)}</Text>
 
@@ -1833,7 +1850,7 @@ export const register: Register = (on, options) => {
 
     const anyExpanded = shown.some(r => !r.isCollapsed)
     const hint = cfg.sendOnClick
-      ? 'click sends · ⎘ draft · ✎ edit · ▶▶ in order · ⇶ agents · ◎ only · ⊟ archive · ✕ dismiss'
+      ? 'click sends · ✐ draft · ✎ edit · ▶▶ in order · ⇶ agents · ◎ only · ⊟ archive · ✕ dismiss'
       : 'click drafts · ▶ send · ✎ edit · ▶▶ in order · ⇶ agents · ◎ only · ⊟ archive · ✕ dismiss'
 
     return (

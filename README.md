@@ -5,12 +5,12 @@ An **Up next** pane beside the transcript that collects the next steps Claude su
 ```
 ✦ Up next                               5 open · 1 done
 ───────────────────────────────────────────────────────
-▾ ⬢ Auth · turn 9                 3 ✎ + ▶▶ ⇶ ▶ ✕
+▾ ● Auth · turn 9                 3 ✎ + ▶▶ ⇶ ▶ ✕
  ├─ ○ Move token check into middleware   ▶ ✎ ✕
  ├─ ○ Add expiry tests •                 ▶ ✎ ✕
  └─ ✓ Remove the old session table       ▶ ✎ ✕
 
-▾ ⬢ Docs · turn 8                 2 ✎ + ▶▶ ⇶ ▶ ✕
+▾ ● Docs · turn 8                 2 ✎ + ▶▶ ⇶ ▶ ✕
  ├─ ○ Document the new flags             ▶ ✎ ✕
  └─ ○ Fix broken links in README         ▶ ✎ ✕
 
@@ -64,7 +64,7 @@ Each turn adds a new group at the top and folds the older ones away. A step that
 
 ## Streams
 
-Each line of work gets its own **stream** (⬢), kept across turns:
+Each line of work gets its own **stream** (●), kept across turns:
 
 - **Sorting:** new steps from a reply join the stream they belong to. A matching heading ("Docs follow-ups" → **Docs**) or enough shared words decide it. When a fork is reading the reply anyway, it picks the stream by name.
 - **New streams:** a group about something new starts its own stream, named after its heading or first step.
@@ -89,10 +89,10 @@ When Claude Code runs inside [herdr](https://herdr.dev), Up next draws its tree 
 ```
 ┌─ claude ───────────────────┬─ upnext ─────────────────────┐
 │ transcript…                │ ✦ Up next             3 open │
-│                            │ ▾ ⬢ Auth  2           ▶ ⊟ ✕  │
+│                            │ ▾ ● Auth  2           ▶ ⊟ ✕  │
 │                            │ ├─ ○ Rotate the key     ▶ ✕  │
 │                            │ └─ ◐ Audit the store    ▶ ✕  │
-│ > _                        │ ▾ ⬢ Docs  1           ▶ ⊟ ✕  │
+│ > _                        │ ▾ ● Docs  1           ▶ ⊟ ✕  │
 └────────────────────────────┴──────────────────────────────┘
 ```
 
@@ -105,6 +105,16 @@ When Claude Code runs inside [herdr](https://herdr.dev), Up next draws its tree 
 | Click a stream's name | Space | Folds or unfolds it |
 | Wheel | `j` `k` ↓ ↑ `g` `G` | Scrolls / moves |
 | | `q` | Closes the viewer |
+
+Colours carry meaning:
+
+- **Each stream's colour** runs through its name and tree lines, so you can tell which stream a step is in while scrolling.
+- **Step text** shows its state: normal when open, yellow while running, red when ✗, dim green and struck through when done.
+- **Bold with a •** marks a step that is new this turn.
+- **Blue** marks `code` and slash commands, the parts that will actually run.
+- **A grey name with "idle"** marks a stream untouched for `nudgeAfter` turns.
+- **The header** counts open, running and ✗ steps.
+- **▶ ⊟ ✕** stay grey until the mouse is on their row, then turn green, yellow and red.
 
 The row under the mouse lights up. Every symbol is one herdr draws one cell wide; set `herdrGlyphs` to `ascii` if your font draws any of them badly.
 
@@ -160,7 +170,7 @@ Step text comes from replies and tool output, which can quote files and web page
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `clickAction` | `draft` | `send` makes a click send the step right away; ▶ then becomes ⎘ (draft first). |
+| `clickAction` | `draft` | `send` makes a click send the step right away; ▶ then becomes ✐ (draft first). |
 | `extractor` | `auto` | `auto`: read replies for free, and ask a fork of the session only when a reply lists nothing, or to check steps you ran. `heuristic`: never call a model. `model`: always ask the fork, which sees the whole conversation and reuses its prompt cache (about one short reply per turn). The pane shows "finding steps…" while it works. |
 | `minAnswerChars` | `80` | Replies shorter than this never trigger a model call. |
 | `nudgeAfter` | `10` | Turns a stream can sit idle with open steps before one toast says so. `0` turns nudges off. |

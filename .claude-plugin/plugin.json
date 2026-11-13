@@ -1,6 +1,6 @@
 {
   "name": "upnext",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
   "author": {
     "name": "rseac"

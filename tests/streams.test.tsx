@@ -59,7 +59,7 @@ async function streams(ui: Finder): Promise<string[]> {
   const buttons = await ui.findAll({ type: 'Button' })
   const out: string[] = []
   for (const b of buttons) {
-    if (b.key?.startsWith('tg:') && b.text?.includes('⬢')) out.push(b.text.replace(/^[▾▸] ⬢ /, '').replace(/ · .*$/, '') + ':')
+    if (b.key?.startsWith('tg:') && b.text?.includes('●')) out.push(b.text.replace(/^[▾▸] ● /, '').replace(/ · .*$/, '') + ':')
     else if (b.key?.startsWith('run:') && out.length > 0) out[out.length - 1] += ` ${b.text?.replace(/^\S+ /, '').replace(/ •$/, '')};`
   }
   return out
@@ -136,7 +136,7 @@ test('the 1/2/3 row offers the top step of each stream first', async ($, on) => 
   await $.turn.complete({ ...TURN, answer: '## Docs follow-ups\n- Document the new CLI flags\n- Fix broken README links', turnId: 't2' })
   const ui = await $.ui.mount(BAND as never)
   const labels = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('b:') && b.key !== 'b:hide').map(b => b.text)
-  expect(labels).toEqual(['⬢ Document the new CLI flags', '⬢ Rotate the signing key', '⬢ Fix broken README links'])
+  expect(labels).toEqual(['● Document the new CLI flags', '● Rotate the signing key', '● Fix broken README links'])
   await ui.unmount()
 })
 
@@ -155,7 +155,7 @@ test('⊟ archives a stream out of the tree and the band; restore brings it back
 
   const band = await $.ui.mount(BAND as never)
   const labels = (await band.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('b:') && b.key !== 'b:hide').map(b => b.text)
-  expect(labels).toEqual(['⬢ Document the new CLI flags'])
+  expect(labels).toEqual(['● Document the new CLI flags'])
   await band.unmount()
 
   await ui.press({ key: 'arch-tg' })
@@ -211,7 +211,7 @@ test('streams get different colours', async ($, on) => {
   await $.turn.complete({ ...TURN, answer: '## Auth follow-ups\n- Rotate the signing key', turnId: 't1' })
   await $.turn.complete({ ...TURN, answer: '## Docs follow-ups\n- Document the new CLI flags', turnId: 't2' })
   const ui = await $.ui.mount(PANE)
-  const glyphs = (await ui.findAll({ type: 'Text', text: /^⬢ $/ })) as { props?: { color?: string } }[]
+  const glyphs = (await ui.findAll({ type: 'Text', text: /^● $/ })) as { props?: { color?: string } }[]
   const colors = glyphs.map(g => g.props?.color)
   expect(colors.length).toBe(2)
   expect(colors[0]).not.toBe(colors[1])
