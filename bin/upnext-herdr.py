@@ -3,6 +3,10 @@
 and keys.
 
     upnext-herdr.py [--ascii] STATE_FILE ACTIONS_FILE
+    upnext-herdr.py [--ascii] --popup
+
+--popup runs as a herdr plugin popup: it finds the state of the Claude pane
+under it (or the most recent one), and closes after a step is drafted or sent.
 
 The mod writes STATE_FILE after every change. This viewer only reads it, and
 asks the mod to act by appending JSON lines to ACTIONS_FILE, which the mod
@@ -59,6 +63,7 @@ FANCY = {
     "pipe": "│  ",
     "space": "   ",
     "send": "▶",
+    "hand": "➜",
     "drop": "✕",
     "archive": "⊟",
     "rule": "─",
@@ -80,14 +85,15 @@ ASCII = {
     "pipe": "|  ",
     "space": "   ",
     "send": ">",
+    "hand": "@",
     "drop": "x",
     "archive": "_",
     "rule": "-",
     "more": "...",
 }
 
-HELP = "click draft · ▶ send · ✕ drop · ⊟ archive · j/k enter s x a · q quit"
-HELP_ASCII = "click draft  > send  x drop  _ archive  j/k enter s x a  q quit"
+HELP = "click draft · ▶ send · ➜ agent · ✕ drop · ⊟ archive · j/k enter s h x a · q quit"
+HELP_ASCII = "click draft  > send  @ agent  x drop  _ archive  j/k enter s h x a  q quit"
 
 
 def cells(text):
@@ -221,7 +227,10 @@ class Line:
 
 
 class Viewer:
-    def __init__(self, state_path, actions_path, ascii_only):
+    def __init__(self, state_path, actions_path, ascii_only, popup=False):
+        self.popup = popup
+        self.picker = None  # {"id", "text", "agents": [(pane, label)], "error"}
+        self.done = False
         self.g = ASCII if ascii_only else FANCY
         self.help = HELP_ASCII if ascii_only else HELP
         self.state_path = state_path
@@ -256,11 +265,11 @@ class Viewer:
         except (OSError, ValueError):
             return False
 
-    def act(self, verb, target, note):
+    def act(self, verb, target, note, **extra):
         self.seq += 1
         try:
             with open(self.actions_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"seq": self.seq, "verb": verb, "id": target}) + "\n")
+                f.write(json.dumps({"seq": self.seq, "verb": verb, "id": target, **extra}) + "\n")
             self.say(note)
         except OSError as e:
             self.say(f"could not reach the mod: {e}")
@@ -339,7 +348,7 @@ class Viewer:
                 text_fg = {"queued": 105, "running": 179, "failed": 167, "done": 71}.get(st)
                 if text_fg is None and s.get("isCommand"):
                     text_fg = CODE
-                text_w = max(8, cols - cells(lead + branch) - 2 - 5 - (2 if is_new else 0))
+                text_w = max(8, cols - cells(lead + branch) - 2 - 7 - (2 if is_new else 0))
                 texts = wrap_words(words_of(safe(s.get("text", ""))), text_w, 3, g["more"])
                 draft = ("draft", sid)
                 for n, words in enumerate(texts):
@@ -357,8 +366,12 @@ class Viewer:
                         line.add(w, draft, fg=fg, dim=is_done, strike=is_done, bold=is_new)
                     if n == 0 and is_new:
                         line.add(" •", draft, fg=color, bold=True)
+                    if n == 0 and s.get("handedTo"):
+                        line.add(f" {g['hand']} {clip(safe(s['handedTo']), 14, g['more'])}", fg=141)
                     if n == 0:
-                        line.pad_to(cols - 4)
+                        line.pad_to(cols - 6)
+                        line.add(" ")
+                        line.add(g["hand"], ("hand", sid), dim=True, hot=141)
                         line.add(" ")
                         line.add(g["send"], ("send", sid), dim=True, hot=71)
                         line.add(" ")
@@ -393,7 +406,7 @@ class Viewer:
             head.add(t, fg=fg, dim=dim)
         rule = Line().add(g["rule"] * cols, dim=True)
 
-        body = self.build(cols)
+        body = self.picker_lines(cols) if self.picker else self.build(cols)
         if not body:
             body = [Line(), Line().add("   Nothing queued up.", bold=True), Line().add("   Steps land here when a reply", dim=True), Line().add("   suggests or offers more.", dim=True)]
         self.cursor = min(self.cursor, max(0, len(self.rows) - 1))
@@ -428,6 +441,52 @@ class Viewer:
         sys.stdout.write(f"{ESC}H" + "\r\n".join(out) + f"{ESC}J")
         sys.stdout.flush()
 
+    def picker_lines(self, cols):
+        g = self.g
+        p = self.picker
+        lines = [Line(), Line().add(" Hand this step to:", bold=True)]
+        for t in wrap(safe(p["text"]), cols - 4, 2, g["more"]):
+            lines.append(Line().add("   " + t, dim=True))
+        lines.append(Line())
+        if p.get("error"):
+            lines.append(Line().add("   " + clip(p["error"], cols - 4, g["more"]), fg=167))
+        for i, (pane, label) in enumerate(p["agents"][:9]):
+            line = Line()
+            zone = ("pick", i)
+            line.add(f"  {i + 1} ", zone, fg=COLORS["claude"], bold=True)
+            line.add(clip(safe(label), cols - 6, g["more"]), zone)
+            lines.append(line)
+        lines.append(Line())
+        lines.append(Line().add("   1-9 or click to pick · Esc to go back", dim=True))
+        return lines
+
+    def open_picker(self, sid, text):
+        """Lists the other agent panes herdr knows, to hand a step to one."""
+        herdr = os.environ.get("HERDR_BIN_PATH") or "herdr"
+        me = {os.environ.get("HERDR_PANE_ID"), self.state.get("claudePane")}
+        agents, error = [], ""
+        try:
+            r = subprocess.run([herdr, "agent", "list"], capture_output=True, text=True, timeout=5)
+            for a in json.loads(r.stdout).get("result", {}).get("agents", []):
+                pane = a.get("pane_id")
+                if not pane or pane in me:
+                    continue
+                where = a.get("terminal_title_stripped") or os.path.basename(a.get("foreground_cwd") or a.get("cwd") or "")
+                agents.append((pane, f"{a.get('agent', 'agent')} · {a.get('agent_status', '?')} · {where}"))
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            error = f"could not list agents: {e}"
+        if not agents and not error:
+            error = "no other agent panes in herdr"
+        self.picker = {"id": sid, "text": text, "agents": agents, "error": error}
+
+    def pick(self, i):
+        p = self.picker
+        if p and 0 <= i < len(p["agents"]):
+            pane, label = p["agents"][i]
+            name = label.split(" · ")[0] + " " + pane
+            self.act("handoff", p["id"], f"handed to {name}", pane=pane, label=name)
+        self.picker = None
+
     def screen_row(self, y):
         line = self.screen.get(y)
         return line.row if line else None
@@ -438,13 +497,21 @@ class Viewer:
         verb, target = zone
         if verb == "toggle":
             self.folded.symmetric_difference_update({target})
+        elif verb == "pick":
+            self.pick(target)
+        elif verb == "hand":
+            step = next((r[2] for r in self.rows if r[0] == "step" and r[2].get("id") == target), None)
+            if step:
+                self.open_picker(target, step.get("text", ""))
         elif verb == "draft":
             self.act("draft", target, "drafted in Claude's prompt box")
-            self.focus_claude()
+            self.leave()
         elif verb == "send":
             self.act("send", target, "sent to Claude")
+            self.done = self.popup
         elif verb == "send-all":
             self.act("send-all", target, "sent the stream's open steps")
+            self.done = self.popup
         elif verb == "dismiss":
             self.act("dismiss", target, "dismissed")
         elif verb == "archive":
@@ -471,7 +538,13 @@ class Viewer:
                 return
 
     def key(self, k):
-        if k in ("q", "\x03"):
+        if self.picker is not None:
+            if k in ("\x1b", "q"):
+                self.picker = None
+            elif k.isdigit() and k != "0":
+                self.pick(int(k) - 1)
+            return True
+        if k in ("q", "\x03", "\x1b"):
             return False
         sel = self.rows[self.cursor] if 0 <= self.cursor < len(self.rows) else None
         self.follow = True
@@ -493,9 +566,18 @@ class Viewer:
             self.run_zone(("send", sel[2]["id"]) if sel[0] == "step" else ("send-all", sel[1]["id"]))
         elif k == "x":
             self.run_zone(("dismiss", (sel[2] or sel[1])["id"]))
+        elif k == "h" and sel[0] == "step":
+            self.run_zone(("hand", sel[2]["id"]))
         elif k == "a" and sel[1].get("kind") == "stream":
             self.run_zone(("archive", sel[1]["id"]))
         return True
+
+    def leave(self):
+        """After a draft: a popup closes (herdr puts focus back); a split moves focus to Claude."""
+        if self.popup:
+            self.done = True
+        else:
+            self.focus_claude()
 
     def focus_claude(self):
         """Back to Claude's pane, so the draft can be edited and sent."""
@@ -532,14 +614,53 @@ def events(fd):
     return out
 
 
+def popup_paths():
+    """The state of the Claude pane under the popup, else the most recently updated one."""
+    folder = os.path.expanduser("~/.claude/upnext/herdr")
+    pane = None
+    try:
+        ctx = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}")
+        stack = [ctx]
+        while stack and pane is None:
+            item = stack.pop()
+            if isinstance(item, dict):
+                if isinstance(item.get("pane_id"), str):
+                    pane = item["pane_id"]
+                stack.extend(item.values())
+            elif isinstance(item, list):
+                stack.extend(item)
+    except ValueError:
+        pane = None
+    fid = lambda p: "".join(c if c.isalnum() or c in "_-" else "-" for c in p)
+    if pane and os.path.exists(os.path.join(folder, fid(pane) + ".json")):
+        base = os.path.join(folder, fid(pane))
+        return [base + ".json", base + ".actions"]
+    try:
+        states = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".json")]
+    except OSError:
+        return None
+    if not states:
+        return None
+    newest = max(states, key=os.path.getmtime)
+    return [newest, newest[:-5] + ".actions"]
+
+
 def main():
     args = sys.argv[1:]
     ascii_only = "--ascii" in args
-    args = [a for a in args if a != "--ascii"]
+    popup = "--popup" in args
+    args = [a for a in args if a not in ("--ascii", "--popup")]
+    if popup and not args:
+        args = popup_paths()
+        if not args:
+            print("Up next: no Claude session in herdr has written its steps yet.")
+            print("Run /upnext herdr in Claude once, then try again.")
+            time.sleep(3)
+            return 1
     if len(args) != 2:
         print(__doc__)
         return 2
-    v = Viewer(args[0], args[1], ascii_only)
+    v = Viewer(args[0], args[1], ascii_only, popup)
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
     resized = [True]
@@ -562,6 +683,9 @@ def main():
                         v.mouse(*ev[1:])
                     elif not v.key(ev[1]):
                         return 0
+                if v.done:
+                    time.sleep(0.15)
+                    return 0
                 changed = True
             if v.note and time.time() >= v.note_until:
                 v.note = ""

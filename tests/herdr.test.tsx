@@ -62,7 +62,7 @@ function engine(on: On, env: Record<string, string>, actions: string[] = []) {
 const HERDR = { HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: '/bin/herdr', HOME: '/home/t' }
 const ANSWER = '## Auth follow-ups\n- Rotate the signing key\n- Audit the token store'
 
-test('inside herdr, steps open a herdr pane with the viewer instead of the pane inside Claude', async ($, on) => {
+test('paneStyle "split": steps open a herdr pane with the viewer instead of the pane inside Claude', { options: { paneStyle: 'split' } }, async ($, on) => {
   const { runs, files, opened } = engine(on, HERDR)
   await $.session.start({ cwd: '/h1', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
@@ -81,7 +81,10 @@ test('inside herdr, steps open a herdr pane with the viewer instead of the pane 
   expect(state.roots[0]!.steps.map(s => s.text)).toEqual(['Rotate the signing key', 'Audit the token store'])
 
   const label = runs.filter(r => r[2] === 'report-metadata').at(-1)!
-  expect(label).toEqual(['/bin/herdr', 'pane', 'report-metadata', 'w1:p1', '--source', 'upnext', '--title', '2 next'])
+  expect(label).toEqual([
+    '/bin/herdr', 'pane', 'report-metadata', 'w1:p1', '--source', 'upnext',
+    '--title', '2 next', '--token', 'upnext=2 next · Auth: Rotate the signing key',
+  ])
 })
 
 test('keys pressed in the viewer reach the mod: a step is drafted, another dropped', async ($, on) => {
@@ -114,12 +117,43 @@ test('outside herdr nothing changes: the pane inside Claude opens, and /upnext h
   await ui.unmount()
 })
 
-test('paneStyle "claude" keeps the pane inside Claude in herdr; /upnext herdr opens the viewer on request', { options: { paneStyle: 'claude' } }, async ($, on) => {
+test('paneStyle "claude" keeps the pane inside Claude in herdr; /upnext herdr and split open on request', { options: { paneStyle: 'claude' } }, async ($, on) => {
   const { runs, opened } = engine(on, HERDR)
   await $.session.start({ cwd: '/h4', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
   expect(opened).toEqual(['upnext'])
   expect(runs).toEqual([])
-  expect((await $.command.run(RUN('herdr'))).text).toContain('Opened Up next in a herdr pane')
+  expect((await $.command.run(RUN('herdr'))).text).toBe('Opened Up next as a herdr popup.')
+  expect((await $.command.run(RUN('split'))).text).toContain('Opened Up next in a herdr pane')
   expect(runs.some(r => r[2] === 'split')).toBe(true)
+})
+
+test('inside herdr by default, nothing opens unasked: the sidebar gets the top step, /upnext herdr opens the popup', async ($, on) => {
+  const { runs, opened } = engine(on, HERDR)
+  await $.session.start({ cwd: '/h5', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
+  expect(opened).toEqual([])
+  expect(runs.some(r => r[2] === 'split')).toBe(false)
+  expect(runs.filter(r => r[2] === 'report-metadata').at(-1)).toContain('upnext=2 next · Auth: Rotate the signing key')
+  expect((await $.command.run(RUN('herdr'))).text).toBe('Opened Up next as a herdr popup.')
+  expect(runs.at(-1)).toEqual(['/bin/herdr', 'plugin', 'pane', 'open', '--plugin', 'upnext', '--entrypoint', 'popup'])
+})
+
+test('a step handed to another agent goes to it as one line, and shows as running', async ($, on) => {
+  const actions: string[] = []
+  const { runs, files } = engine(on, HERDR, actions)
+  await $.session.start({ cwd: '/h6', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
+  const state = JSON.parse(files['/home/t/.claude/upnext/herdr/w1-p1.json']!) as { roots: { steps: { id: string }[] }[] }
+  const id = state.roots[0]!.steps[0]!.id
+  actions.push(`{"seq":1,"verb":"handoff","id":"${id}","pane":"w2:p3","label":"codex w2:p3"}\n`)
+  await $.turn.complete({ ...TURN, answer: 'ok', turnId: 't2' })
+  for (let i = 0; i < 50 && !runs.some(r => r[2] === 'prompt'); i++) await tick()
+  const prompt = runs.find(r => r[1] === 'agent' && r[2] === 'prompt')!
+  expect(prompt.slice(0, 4)).toEqual(['/bin/herdr', 'agent', 'prompt', 'w2:p3'])
+  expect(prompt[4]).toContain('Rotate the signing key')
+  expect(prompt[4]).toContain('Handed over from a Claude Code session working in /h6')
+  expect(prompt[4]!.includes('\n')).toBe(false)
+  for (let i = 0; i < 50 && !files['/home/t/.claude/upnext/herdr/w1-p1.json']!.includes('codex'); i++) await tick()
+  expect(files['/home/t/.claude/upnext/herdr/w1-p1.json']).toContain('"handedTo":"codex w2:p3"')
 })

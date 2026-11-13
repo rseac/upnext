@@ -84,27 +84,61 @@ Each line of work gets its own **stream** (●), kept across turns:
 
 ## Inside herdr
 
-When Claude Code runs inside [herdr](https://herdr.dev), Up next draws its tree in a herdr pane of its own, to the right of Claude's, instead of inside Claude. It uses plain characters, so it lines up however the terminal counts symbol widths.
+When Claude Code runs inside [herdr](https://herdr.dev), Up next stays out of the way until you ask for it:
 
 ```
-┌─ claude ───────────────────┬─ upnext ─────────────────────┐
-│ transcript…                │ ✦ Up next             3 open │
-│                            │ ▾ ● Auth  2           ▶ ⊟ ✕  │
-│                            │ ├─ ○ Rotate the key     ▶ ✕  │
-│                            │ └─ ◐ Audit the store    ▶ ✕  │
-│ > _                        │ ▾ ● Docs  1           ▶ ⊟ ✕  │
-└────────────────────────────┴──────────────────────────────┘
+┌─ claude ─────────────────────────────────────────────┐
+│ transcript…    ┌─ Up next ────────────────────────┐  │
+│                │ ● Auth  2               ▶ ⊟ ✕    │  │
+│                │ ├─ ○ Rotate the key     ➜ ▶ ✕    │  │
+│                │ └─ ◐ Audit the store    ➜ ▶ ✕    │  │
+│ > _            └──────────────────────────────────┘  │
+└──────────────────────────────────────────────────────┘
 ```
+
+- **A popup on a key:** `prefix+u` (or `/upnext herdr`) opens the tree over Claude's pane. Picking a step drafts it in Claude's prompt box and closes the popup; Esc or `q` closes it without picking. Your layout never changes.
+- **A line in herdr's sidebar** under the Claude agent: `3 next · Auth: Rotate the key`.
+- **Hand a step to another agent:** ➜ (or `h`) lists the other agent panes herdr knows (Claude, Codex and others). Pick one and the step is sent to it as a prompt. The step shows ➜ and the agent's name while it works, then ✓ or ✗; a toast says when that agent is waiting for you.
+- **Or a pane that stays open:** set `paneStyle` to `split`, or run `/upnext split`.
+
+Outside herdr none of this applies: the pane inside Claude, the status line and the 1/2/3 row do the same jobs.
+
+### One-time setup
+
+1. Link the herdr plugin that ships in this repo's `herdr/` folder:
+   ```
+   herdr plugin link <path to upnext>/herdr
+   ```
+2. Add to `~/.config/herdr/config.toml`, then run `herdr server reload-config`:
+   ```toml
+   [[keys.command]]
+   key = "prefix+u"
+   type = "plugin_action"
+   command = "upnext.open"
+   description = "Up next"
+
+   [ui.sidebar.agents]
+   row_gap = 0
+   rows = [
+     ["state_icon", "machine", "workspace", "tab"],
+     ["agent"],
+     [{ token = "$upnext", dim = true }],
+   ]
+   ```
+   The first two sidebar rows are herdr's defaults; the third is Up next's line.
+
+The popup needs `python3`. It reads a state file in `~/.claude/upnext/herdr/` and leaves its requests in a second file there, which the mod picks up twice a second.
 
 | Mouse | Keys | What it does |
 | --- | --- | --- |
-| Click a step | Enter or `d` | Drafts it in Claude's prompt box and moves you to Claude's pane |
+| Click a step | Enter or `d` | Drafts it in Claude's prompt box (the popup closes; the split moves you to Claude) |
 | ▶ | `s` | Sends the step (on a stream: all its open steps) |
+| ➜ | `h` | Hands the step to another agent pane |
 | ✕ | `x` | Dismisses the step or stream |
 | ⊟ | `a` | Archives the stream |
 | Click a stream's name | Space | Folds or unfolds it |
 | Wheel | `j` `k` ↓ ↑ `g` `G` | Scrolls / moves |
-| | `q` | Closes the viewer |
+| | `q` or Esc | Closes |
 
 Colours carry meaning:
 
@@ -116,13 +150,7 @@ Colours carry meaning:
 - **The header** counts open, running and ✗ steps.
 - **▶ ⊟ ✕** stay grey until the mouse is on their row, then turn green, yellow and red.
 
-The row under the mouse lights up. Every symbol is one herdr draws one cell wide; set `herdrGlyphs` to `ascii` if your font draws any of them badly.
-
-- **When it opens:** when the first steps arrive. If you close it, it stays closed until `/upnext herdr`.
-- **The count:** Claude's herdr pane gets the title "3 next" while steps are open (`herdrLabel`).
-- **The pane inside Claude still works:** `/upnext` opens it as before.
-- **Outside herdr** nothing changes.
-- **Requires** `python3`. The viewer only reads a state file in `~/.claude/upnext/herdr/` and leaves its requests in a second file there. The mod picks them up twice a second and acts on them the same way the pane's buttons do.
+The row under the mouse lights up.
 
 ## Using it
 
@@ -163,7 +191,8 @@ Open steps are saved per project folder. The next session there brings them back
 | `/upnext` | Opens the pane. If you closed it, it stays closed until you run this again. |
 | `/upnext <stream>` | Shows only the stream whose name matches (exact, then starts with, then contains). Restores it if archived. |
 | `/upnext all` | Shows every stream again. |
-| `/upnext herdr` | Opens the herdr viewer pane (inside herdr only). |
+| `/upnext herdr` | Opens the Up next popup (inside herdr only). |
+| `/upnext split` | Opens the herdr pane that stays beside Claude's. |
 | `/upnext clear` | Empties the pane and the saved copy. |
 | `/upnext export [file]` | Writes every step as a Markdown checklist (default `NEXT_STEPS.md`). |
 | `/upnext issues` | Drafts a prompt asking Claude to turn the open steps into GitHub issues, showing them to you first. Nothing is created until you send it and approve. |
@@ -187,8 +216,8 @@ Step text comes from replies and tool output, which can quote files and web page
 | `autoOpen` | `true` | Opens the pane when new steps arrive. |
 | `scanToolOutput` | `true` | Reads Bash output and todo/task lists too. |
 | `autoTick` | `true` | Ticks steps off after a commit that covers them, or a test run that passes. |
-| `paneStyle` | `auto` | `auto`: inside herdr, draw the tree in a herdr pane; elsewhere, the pane inside Claude. `claude`: always the pane inside Claude (`/upnext herdr` still works). |
-| `herdrLabel` | `true` | Inside herdr, shows the open count as the title of Claude's pane. |
+| `paneStyle` | `auto` | `auto`: inside herdr, a popup on a key and a sidebar line; elsewhere, the pane inside Claude. `split`: inside herdr, a pane beside Claude's that stays open. `claude`: always the pane inside Claude (`/upnext herdr` still works). |
+| `herdrLabel` | `true` | Inside herdr, sets the sidebar line (`upnext` token) and the title of Claude's pane. |
 | `herdrGlyphs` | `symbols` | `ascii` draws the herdr pane with plain characters. |
 
 ## License

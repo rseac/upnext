@@ -471,7 +471,7 @@ const storeKey = () => `roots:${cfg.cwd}`
 function snapshot(roots: Root[]): Root[] {
   return mapAll(
     roots.filter(r => r.kind !== 'todo' && r.kind !== 'likely'),
-    ({ agentId: _agent, ...s }) => (s.status === 'done' ? undefined : { ...s, status: 'open' }),
+    ({ agentId: _agent, handedPane: _pane, handedTo: _to, ...s }) => (s.status === 'done' ? undefined : { ...s, status: 'open' }),
   ).slice(0, MAX_ROOTS)
 }
 
@@ -1047,7 +1047,7 @@ async function afterClear($: EngineInterface) {
         ...s,
         isEarlier: true,
         // A background agent may still finish; anything else in flight is open again.
-        status: s.agentId === undefined && (s.status === 'queued' || s.status === 'running') ? 'open' : s.status,
+        status: s.agentId === undefined && s.handedPane === undefined && (s.status === 'queued' || s.status === 'running') ? 'open' : s.status,
       })),
     })),
   )
@@ -1157,6 +1157,8 @@ const herdr = {
   cwd: '',
   label: true,
   ascii: false,
+  /** 'popup': the tree opens on a key over Claude's pane; 'split': a pane beside it. */
+  style: 'popup' as 'popup' | 'split',
   lastLabel: '',
   lastState: '',
   isPolling: false,
@@ -1176,7 +1178,7 @@ async function herdrRun($: EngineInterface, args: string[]): Promise<string | un
   }
 }
 
-type FlatStep = { id: string; text: string; status: StepStatus; depth: number; isNew: boolean; isCommand: boolean }
+type FlatStep = { id: string; text: string; status: StepStatus; depth: number; isNew: boolean; isCommand: boolean; handedTo?: string }
 
 /** Steps in tree order; `text` keeps `code` in backticks for the viewer to colour. */
 const flatSteps = (steps: Step[], turn: number, depth = 0): FlatStep[] =>
@@ -1188,6 +1190,7 @@ const flatSteps = (steps: Step[], turn: number, depth = 0): FlatStep[] =>
       depth,
       isNew: s.addedTurn !== undefined && s.addedTurn === turn && s.status === 'open',
       isCommand: commandOf(s.text) !== undefined,
+      ...(s.handedTo !== undefined ? { handedTo: s.handedTo } : {}),
     },
     ...(s.isCollapsed ? [] : flatSteps(s.children, turn, depth + 1)),
   ])
@@ -1219,15 +1222,93 @@ async function herdrSync($: EngineInterface, roots: Root[]) {
   }
   if (herdr.label) {
     const open = shown.flatMap(r => allSteps(r.steps)).filter(isOpen).length
-    await herdrLabel($, open > 0 ? `${open} next` : '')
+    const top = topSteps(roots, 1)[0]
+    const line = top ? `${open} next · ${plain(top.root.title).replace(/`/g, '')}: ${plain(top.step.text).replace(/`/g, '')}` : ''
+    await herdrLabel($, open > 0 ? `${open} next` : '', [...line].length > 80 ? `${[...line].slice(0, 79).join('')}…` : line)
   }
 }
 
-async function herdrLabel($: EngineInterface, label: string) {
-  if (label === herdr.lastLabel) return
-  herdr.lastLabel = label
-  const base = ['pane', 'report-metadata', herdr.pane, '--source', 'upnext']
-  await herdrRun($, label !== '' ? [...base, '--title', label] : [...base, '--clear-title'])
+/** The pane title ("3 next") and the `upnext` sidebar token ("3 next · Auth: Rotate the key"). */
+async function herdrLabel($: EngineInterface, title: string, token = '') {
+  const key = `${title}\n${token}`
+  if (key === herdr.lastLabel) return
+  herdr.lastLabel = key
+  const args = ['pane', 'report-metadata', herdr.pane, '--source', 'upnext']
+  args.push(...(title !== '' ? ['--title', title] : ['--clear-title']))
+  args.push(...(token !== '' ? ['--token', `upnext=${token}`] : ['--clear-token', 'upnext']))
+  await herdrRun($, args)
+}
+
+/** Opens the tree as a herdr popup over Claude's pane; false when the herdr plugin is not linked. */
+async function openPopup($: EngineInterface): Promise<boolean> {
+  herdr.lastState = ''
+  await herdrSync($, await read($, rootsA))
+  return (await herdrRun($, ['plugin', 'pane', 'open', '--plugin', 'upnext', '--entrypoint', 'popup'])) !== undefined
+}
+
+// ---- Handing a step to another herdr agent ------------------------------------
+
+/** Sends a step to another agent pane, then waits (off the turn's path) for it to finish. */
+async function handOff($: EngineInterface, id: string, pane: string, label: string) {
+  const roots = await read($, rootsA)
+  const hit = find(roots, id)
+  if (!hit || !/^[A-Za-z0-9:_-]{1,40}$/.test(pane)) return
+  const name = clean(label, 40) || pane
+  const prompt = (promptToSend(roots, id) ?? promptForStep(hit.step)) + `\n\n(Handed over from a Claude Code session working in ${herdr.cwd}. Do the work there.)`
+  // One line: a newline would submit the prompt early in the agent's own prompt box.
+  const text = prompt.replace(/\s*\n\s*/g, ' ').slice(0, 4000)
+  if ((await herdrRun($, ['agent', 'prompt', pane, text])) === undefined) {
+    $.ui.toast(`upnext: could not hand the step to ${name} (is it busy or waiting on you?)`)
+    return
+  }
+  const ids = openIds([hit.step, ...allSteps(hit.step.children)])
+  await changeRoots($, rs =>
+    mapAll(rs, s => (s.id === id ? { ...s, status: 'running', handedPane: pane, handedTo: name } : ids.includes(s.id) ? { ...s, status: 'running' } : s)),
+  )
+  $.ui.toast(`upnext: ➜ handed to ${name}`)
+  void watchHandoff($, id, pane, name, true)
+}
+
+/** Waits for the agent to settle; a blocked agent gets a toast and more waiting. */
+async function watchHandoff($: EngineInterface, id: string, pane: string, name: string, isFresh: boolean) {
+  for (let round = 0; round < 12; round++) {
+    let status = ''
+    try {
+      // The first wait needs to see the agent start working, so it is not met by the idle before.
+      const args =
+        isFresh && round === 0
+          ? ['agent', 'wait', pane, '--until', 'working', '--until', 'blocked', '--timeout', '15000']
+          : ['agent', 'wait', pane, '--until', 'idle', '--until', 'done', '--until', 'blocked', '--timeout', '590000']
+      const r = await $.process.run([herdr.bin, ...args], { timeoutMs: 600000 })
+      if (r.exitCode !== 0 && round > 0) continue
+      status = /"agent_status"\s*:\s*"(\w+)"/.exec(r.stdout)?.[1] ?? ''
+    } catch {
+      continue
+    }
+    if (isFresh && round === 0) continue
+    if (status === 'blocked') {
+      $.ui.toast(`upnext: ➜ ${name} is waiting for you`)
+      continue
+    }
+    if (status !== 'idle' && status !== 'done') continue
+    const out = (await herdrRun($, ['agent', 'read', pane, '--source', 'recent', '--lines', '30'])) ?? ''
+    const verdict: StepStatus = FAILED.test(out) ? 'failed' : 'done'
+    const roots = await read($, rootsA)
+    const hit = find(roots, id)
+    if (!hit || hit.step.handedPane !== pane) return
+    const ids = [hit.step, ...allSteps(hit.step.children)].map(s => s.id)
+    await changeRoots($, rs =>
+      mapAll(rs, s =>
+        s.id === id
+          ? { ...s, status: verdict, handedPane: undefined, handedTo: undefined }
+          : ids.includes(s.id) && s.status !== 'done'
+            ? { ...s, status: verdict }
+            : s,
+      ),
+    )
+    $.ui.toast(`upnext: ${verdict === 'done' ? '✓' : '✗'} ${name} finished: ${plain(hit.step.text).slice(0, 50)}`)
+    return
+  }
 }
 
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
@@ -1252,8 +1333,9 @@ async function openViewer($: EngineInterface): Promise<string> {
   return 'Opened Up next in a herdr pane to the right.'
 }
 
-/** Opens the viewer when steps arrive, unless the person closed it. */
+/** Opens the viewer when steps arrive, unless the person closed it. A popup opens only on its key. */
 async function autoViewer($: EngineInterface) {
+  if (herdr.style === 'popup') return
   const existing = await read($, viewerA)
   if (existing !== null) {
     if ((await herdrRun($, ['pane', 'get', existing])) !== undefined) return
@@ -1275,13 +1357,17 @@ async function pollViewer($: EngineInterface) {
     const text = await $.fs.read(actionsPath())
     await $.fs.write(actionsPath(), '')
     for (const line of text.split('\n').slice(0, 20)) {
-      let a: { verb?: unknown; id?: unknown }
+      let a: { verb?: unknown; id?: unknown; pane?: unknown; label?: unknown }
       try {
         a = JSON.parse(line) as typeof a
       } catch {
         continue
       }
       if (typeof a.id !== 'string' || a.id.length > 120) continue
+      if (a.verb === 'handoff') {
+        if (typeof a.pane === 'string') void handOff($, a.id, a.pane, typeof a.label === 'string' ? a.label : a.pane)
+        continue
+      }
       await viewerAction($, String(a.verb), a.id)
     }
   } catch (error) {
@@ -1351,6 +1437,7 @@ export const register: Register = (on, options) => {
   const showBand = options.band !== false
   const keepAcrossSessions = options.keepAcrossSessions !== false
   const useHerdr = options.paneStyle !== 'claude'
+  herdr.style = options.paneStyle === 'split' ? 'split' : 'popup'
   herdr.label = options.herdrLabel !== false
   herdr.ascii = options.herdrGlyphs === 'ascii'
 
@@ -1358,8 +1445,8 @@ export const register: Register = (on, options) => {
     cfg.cwd = keepAcrossSessions ? e.cwd : ''
     await $.command.register({
       name: 'upnext',
-      description: 'Show the Up next pane. Also: herdr, <stream> to show one stream, all, clear, export [file], issues',
-      argumentHint: '[herdr | <stream> | all | clear | export [file] | issues]',
+      description: 'Show the Up next pane. Also: herdr, split, <stream> to show one stream, all, clear, export [file], issues',
+      argumentHint: '[herdr | split | <stream> | all | clear | export [file] | issues]',
     })
     herdr.inside = (await $.env.get('HERDR_PANE_ID').catch(() => undefined)) ?? ''
     herdr.pane = useHerdr ? herdr.inside : ''
@@ -1380,6 +1467,11 @@ export const register: Register = (on, options) => {
     }
     if (keepAcrossSessions) await restore($)
     const roots = await changeRoots($, r => r)
+    if (herdr.inside !== '') {
+      for (const step of roots.flatMap(r => allSteps(r.steps))) {
+        if (step.handedPane !== undefined) void watchHandoff($, step.id, step.handedPane, step.handedTo ?? step.handedPane, false)
+      }
+    }
     if (cfg.autoOpen && live(roots).length > 0 && !(await read($, closedA))) {
       if (herdr.pane !== '') void autoViewer($)
       else void $.ui.open({ id: PANE, title: TITLE })
@@ -1395,7 +1487,8 @@ export const register: Register = (on, options) => {
         return { text: 'Cleared the Up next pane.' }
       case 'export':
         return { text: await exportSteps($, rest.join(' ') || 'NEXT_STEPS.md') }
-      case 'herdr': {
+      case 'herdr':
+      case 'split': {
         if (herdr.inside === '' || herdr.dir === '') return { text: 'Claude is not running inside herdr, so there is no herdr pane to open.' }
         if (herdr.pane === '') {
           // paneStyle is "claude": start the viewer's link for this session.
@@ -1404,7 +1497,9 @@ export const register: Register = (on, options) => {
           $.clock.every(500, () => void pollViewer($))
         }
         await update($, closedA, () => false)
-        return { text: await openViewer($) }
+        if (verb.toLowerCase() === 'split' || herdr.style === 'split') return { text: await openViewer($) }
+        if (await openPopup($)) return { text: 'Opened Up next as a herdr popup.' }
+        return { text: `${await openViewer($)} (The herdr popup needs the plugin: herdr plugin link ${$.plugin.root}/herdr)` }
       }
       case 'issues':
         // After the command's own line has left the prompt box.
@@ -1815,7 +1910,8 @@ export const register: Register = (on, options) => {
         const first = lead + (isLast ? '└─ ' : '├─ ')
         const more = lead + (isLast ? '   ' : '│  ')
         const hasKids = step.children.length > 0
-        const st = step.agentId !== undefined ? { glyph: '⇶', color: 'merged' } : STATUS[step.status]
+        const st =
+          step.agentId !== undefined ? { glyph: '⇶', color: 'merged' } : step.handedPane !== undefined ? { glyph: '➜', color: 'merged' } : STATUS[step.status]
         const isDone = step.status === 'done'
         // Tool output is only ever drafted, so it gets no send control.
         const hasAlt = !(root.kind === 'tool' && !cfg.sendOnClick)

@@ -1,6 +1,6 @@
 {
   "name": "upnext",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
   "author": {
     "name": "rseac"
@@ -89,17 +89,18 @@
     "paneStyle": {
       "type": "string",
       "title": "Where the tree is drawn inside herdr",
-      "description": "auto: when Claude runs inside herdr, show the tree in a herdr pane of its own (plain characters, keys), and keep /upnext for the pane inside Claude. Outside herdr nothing changes. claude: always the pane inside Claude; /upnext herdr still opens the herdr pane on request.",
+      "description": "auto: inside herdr, the tree opens as a popup over Claude's pane on a key (prefix+u with the herdr plugin linked, or /upnext herdr), and herdr's sidebar shows the top step. split: a herdr pane beside Claude's that stays open. claude: always the pane inside Claude. Outside herdr every setting uses the pane inside Claude.",
       "default": "auto",
       "options": [
         "auto",
+        "split",
         "claude"
       ]
     },
     "herdrLabel": {
       "type": "boolean",
-      "title": "Show the open count on Claude's herdr pane",
-      "description": "Inside herdr, sets the title of Claude's pane to \"3 next\" while steps are open.",
+      "title": "Show Up next in herdr's sidebar and pane title",
+      "description": "Inside herdr, sets the `upnext` pane token (\"3 next · Auth: Rotate the key\") for a sidebar row, and the title of Claude's pane to \"3 next\".",
       "default": true
     },
     "herdrGlyphs": {

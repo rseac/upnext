@@ -19,6 +19,9 @@ export type Step = {
    * its prompt is made self-contained when it is sent, not stored that way.
    */
   isEarlier?: boolean
+  /** The herdr agent pane it was handed to, and that agent's name, while it works. */
+  handedPane?: string
+  handedTo?: string
 }
 
 /** Where a group of steps came from. */

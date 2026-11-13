@@ -1,0 +1,23 @@
+# Up next for herdr: the step tree of the upnext Claude Code mod, as a popup
+# over Claude's pane. Link once with:  herdr plugin link <this folder>
+# and bind a key in ~/.config/herdr/config.toml (see the README).
+
+id = "upnext"
+name = "Up next"
+version = "0.15.0"
+min_herdr_version = "0.9.0"
+description = "The next steps Claude suggested, as a popup: click or press a key to draft, send or hand one to another agent."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open"
+title = "Up next"
+command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin upnext --entrypoint popup"]
+
+[[panes]]
+id = "popup"
+title = "Up next"
+placement = "popup"
+width = "70%"
+height = "70%"
+command = ["sh", "-c", "exec python3 \"$HERDR_PLUGIN_ROOT/../bin/upnext-herdr.py\" --popup"]
