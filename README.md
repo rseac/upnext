@@ -85,11 +85,11 @@ Newest steps are on top, in each stream and across streams. Steps from one reply
 
 | Untouched for | What happens |
 | --- | --- |
-| 3 turns after it is done (✓) | It leaves the pane. |
+| Done (✓) | It leaves the pane when the turn that did it ends, with a toast. |
 | 10 turns | It fades and ranks lower. |
 | 30 turns | It moves into a folded **older** group at the bottom (`o`), where **restore** brings it back on top. Nothing is deleted. |
 
-*Touched* means run, edited, moved, ticked or suggested again. A step Claude suggests again, in any stream, refreshes the one already there instead of adding a copy. Change the thresholds with `clearDoneAfter`, `fadeAfter` and `oldAfter` (0 turns each off). The todo list is left alone: Claude keeps that one.
+*Touched* means run, edited, moved, ticked or suggested again. A step Claude suggests again, in any stream, refreshes the one already there instead of adding a copy. Change the timing with `clearDoneAfter`, `fadeAfter` and `oldAfter`. The todo list is left alone: Claude keeps that one.
 
 ## Where steps come from
 
@@ -232,7 +232,7 @@ Steps found in Bash output are only ever drafted, never sent straight away (thei
 
 The status mark shows progress: ○ open, ◌ queued, ◐ running, ⇶ with a background agent, ✓ done, ✗ not done.
 
-When a step's turn ends, it gets ✓, or ✗ if the reply says it couldn't finish. In `auto` and `model` mode, a fork then checks the work and corrects the mark if needed. Steps also track prompts you type yourself: if what you type clearly matches an open step, that step is marked too.
+When a step's turn ends, it gets ✓, or ✗ if the reply says it couldn't finish. In `auto` and `model` mode, a fork then checks the work and corrects the mark if needed. **Prompts you type clear steps too.** If what you type clearly asks for an open step, it is marked running and cleared when the turn ends. Matching looks at the step's meaningful words (not "the", "please"…), and a short "do 2" or "#3" means that step's number in the pane. When a typed prompt matches no step, Haiku reads a short brief (the open steps, your prompt, the start of the reply) and says which steps the turn actually completed; those are cleared. That costs one small call, only on such turns, only with `rank: auto`. A step whose done-check is still running stays until the check answers, so a ✗ can still land.
 
 **Each session has its own list.** A new session starts empty, even in the same project folder; resuming a session (`claude --resume`) brings its own open steps back, folded and marked "earlier". In herdr, the popup shows the list of the Claude session in the pane it opens over, never another session's. The status line shows how many are open.
 
@@ -271,7 +271,7 @@ Step text comes from replies and tool output, which can quote files and web page
 | `scanToolOutput` | `true` | Reads Bash output and todo/task lists too. |
 | `autoTick` | `true` | Ticks steps off after a commit that covers them, or a test run that passes. |
 | `rank` | `auto` | `auto`: free scoring every turn, plus a Haiku re-rank when new steps arrive. `local`: free scoring only. `off`: no ranked section. |
-| `clearDoneAfter` | `3` | Turns a done step stays before it leaves. `0` keeps done steps. |
+| `clearDoneAfter` | `0` | Turns a done step stays before it leaves: `0` clears it when the turn that did it ends; a negative number keeps done steps until you clear them. |
 | `fadeAfter` | `10` | Untouched turns before a step fades and ranks lower. `0` turns fading off. |
 | `oldAfter` | `30` | Untouched turns before a step moves to "older". `0` keeps every step in the tree. |
 | `paneStyle` | `auto` | `auto`: inside herdr, a popup on a key and a sidebar line; elsewhere, the pane inside Claude. `split`: inside herdr, a pane beside Claude's that stays open. `claude`: always the pane inside Claude (`/upnext herdr` still works). |

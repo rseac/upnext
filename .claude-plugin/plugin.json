@@ -1,6 +1,6 @@
 {
   "name": "upnext",
-  "version": "0.20.1",
+  "version": "0.21.0",
   "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
   "author": {
     "name": "rseac"
@@ -63,9 +63,9 @@
     },
     "clearDoneAfter": {
       "type": "number",
-      "title": "Remove done steps after this many turns",
-      "description": "A step marked done (✓) leaves the pane this many turns later. 0 keeps done steps until you clear them.",
-      "default": 3
+      "title": "Clear done steps after this many turns",
+      "description": "A step that gets done (✓), by a turn, a commit, a passing test or a click, leaves the pane this many turns later. 0 clears it at the end of the turn that did it, with a toast. A negative number keeps done steps until you clear them.",
+      "default": 0
     },
     "fadeAfter": {
       "type": "number",

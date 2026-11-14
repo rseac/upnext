@@ -35,7 +35,7 @@ const idle = async ($: Parameters<TestBody>[0], from: number, to: number) => {
   for (let i = from; i <= to; i++) await $.turn.complete({ ...TURN, answer: 'ok', turnId: `t${i}` })
 }
 
-test('a done step leaves by itself three turns after it was done', async ($, on) => {
+test('with clearDoneAfter 3, a done step leaves three turns after it was done', { options: { clearDoneAfter: 3 } }, async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/a1', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, answer: '## Next steps\n- Add tests\n- [x] Ship it', turnId: 't1' })

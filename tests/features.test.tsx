@@ -137,7 +137,7 @@ test('a step sent from the pane is checked by the model, and marked ✗ when not
   await ui.unmount()
 })
 
-test('a prompt the person types that matches a step marks it', async ($, on) => {
+test('a prompt the person types that matches a step marks it running, then clears it', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/proj-e', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, reason: 'answer', answer: '## Next steps\n- Add unit tests for the parser', turnId: 't1' })
@@ -146,7 +146,7 @@ test('a prompt the person types that matches a step marks it', async ($, on) => 
   const ui = await $.ui.mount(PANE)
   expect((await stepRow(ui, /Add unit tests/))?.text).toContain('◐')
   await $.turn.complete({ ...TURN, reason: 'answer', answer: 'Added them; all pass.', turnId: 't2' })
-  expect((await stepRow(ui, /Add unit tests/))?.text).toContain('✓')
+  expect(await stepRow(ui, /Add unit tests/)).toBeUndefined()
   await ui.unmount()
 })
 
@@ -196,7 +196,7 @@ test('a resumed session gets its saved steps back, folded', async ($, on) => {
   await ui.unmount()
 })
 
-test('/upnext export writes a checklist', async ($, on) => {
+test('/upnext export writes a checklist', { options: { clearDoneAfter: -1 } }, async ($, on) => {
   const { written, toasts } = engine(on)
   await $.session.start({ cwd: '/proj-i', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, reason: 'answer', answer: '## Next steps\n- Add tests\n- [x] Ship it', turnId: 't1' })
