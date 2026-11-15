@@ -2,6 +2,7 @@
   "name": "upnext",
   "version": "0.22.1",
   "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
+  "icon": "./.claude-plugin/icon.png",
   "author": {
     "name": "rseac"
   },

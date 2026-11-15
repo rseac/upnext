@@ -1,3 +1,5 @@
+<img src=".claude-plugin/icon.png" alt="upnext icon" width="96" align="right">
+
 # upnext
 
 A Claude Code mod that keeps track of what to do next, so suggestions stop getting lost.
