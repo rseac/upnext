@@ -64,3 +64,20 @@ test('bandStyle "row" keeps the single line', { options: { bandStyle: 'row' } },
   expect((await band.findAll({ type: 'Text', text: /✦ next/ })).length).toBe(1)
   await band.unmount()
 })
+
+const rowsShown = async (band: { findAll: (q: { type?: string }) => Promise<Found[]> }) =>
+  (await band.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('b:') && b.key !== 'b:hide').length
+
+test('the lines fit the rows Claude Code gives: two rows, two lines; one row, all three on one line', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/b3', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
+  const two = await $.ui.mount({ ...BAND, props: { ...BAND.props, maxRows: 2 } } as never)
+  expect(await rowsShown(two)).toBe(2)
+  expect((await two.findAll({ type: 'Text', text: /✦ next/ })).length).toBe(0)
+  await two.unmount()
+  const one = await $.ui.mount({ ...BAND, props: { ...BAND.props, maxRows: 1 } } as never)
+  expect(await rowsShown(one)).toBe(3)
+  expect((await one.findAll({ type: 'Text', text: /✦ next/ })).length).toBe(1)
+  await one.unmount()
+})

@@ -1158,6 +1158,9 @@ const listStep = (id: string, text: string, status: StepStatus): Step | undefine
   return t === '' ? undefined : { id, text: t, prompt: promptFor('todo', t, []), status, isCollapsed: false, children: [] }
 }
 
+/** The last size the area above the prompt reported, so it is recorded once per change. */
+let bandSeen = ''
+
 // ---- Age: newest first, fading, "older", and done steps leaving ------------------
 
 /** The last turn a step arrived or was touched; -1 when it carries neither. */
@@ -2324,11 +2327,24 @@ export const register: Register = (on, options) => {
       if ((await read($, bandHiddenA)) >= turn) return below
       const bandRoots = await read($, rootsA)
       const { Box, Text, Button } = $.ui.resolve(e)
-      if (bandList) {
-        // Three lines: the top three steps, each with why. Yours are safe here:
+      // How many rows Claude Code gives this area: past them a tree scrolls, showing one
+      // row fewer plus "n more". Lines are fitted to it; one row gets the single line.
+      const maxRows = typeof e.props.maxRows === 'number' && e.props.maxRows > 0 ? e.props.maxRows : BAND_ITEMS + 1
+      const fit = Math.max(1, Math.min(BAND_ITEMS, maxRows))
+      if (herdr.dir !== '') {
+        const seen = `${e.props.maxRows}/${e.props.scroll?.bodyRows ?? '-'}/${e.props.bodyColumns}`
+        if (seen !== bandSeen) {
+          bandSeen = seen
+          void $.fs
+            .write(`${herdr.dir}/band.json`, JSON.stringify({ maxRows: e.props.maxRows, bodyRows: e.props.scroll?.bodyRows, bodyColumns: e.props.bodyColumns, at: Date.now() }))
+            .catch(() => undefined)
+        }
+      }
+      if (bandList && fit >= 2) {
+        // Up to three lines: the top steps, each with why. Yours are safe here:
         // a number ticks a check off, or starts your answer to a decision.
-        const ranked = ranking(bandRoots, await read($, rankA), turn).top.slice(0, BAND_ITEMS)
-        const items: Ranked[] = ranked.length > 0 ? ranked : topSteps(treeOf(bandRoots, turn), BAND_ITEMS).map(t => ({ ...t, why: '' }))
+        const ranked = ranking(bandRoots, await read($, rankA), turn).top.slice(0, fit)
+        const items: Ranked[] = ranked.length > 0 ? ranked : topSteps(treeOf(bandRoots, turn), fit).map(t => ({ ...t, why: '' }))
         if (items.length === 0) return below
         const cols = e.props.bodyColumns
         const STATUS_MARK: Record<StepStatus, { glyph: string; color: string }> = {
@@ -2377,7 +2393,7 @@ export const register: Register = (on, options) => {
         )
       }
       const ranked = ranking(bandRoots, await read($, rankA), turn)
-        .top.filter(t => isPrompt(t.step))
+        .top.filter(t => bandList || isPrompt(t.step))
         .slice(0, BAND_ITEMS)
       const top = ranked.length > 0 ? ranked : topSteps(treeOf(bandRoots, turn), BAND_ITEMS)
       if (top.length === 0) return below
