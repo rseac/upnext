@@ -1,8 +1,10 @@
-<img src=".claude-plugin/icon.png" alt="upnext icon" width="96" align="right">
+<p align="center">
+  <img src=".claude-plugin/icon.png" alt="upnext" width="180">
+</p>
 
-# upnext
+<h1 align="center">upnext</h1>
 
-A Claude Code mod that keeps track of what to do next, so suggestions stop getting lost.
+<p align="center">A Claude Code mod that keeps track of what to do next, so suggestions stop getting lost.</p>
 
 ## The problem
 
