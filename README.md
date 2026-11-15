@@ -1,5 +1,28 @@
 # upnext
 
+A Claude Code mod that keeps track of what to do next, so suggestions stop getting lost.
+
+## The problem
+
+Most Claude replies end with suggestions: a "Next steps" list, "Want me to also…", a hint in some command's output. In a long session they go wrong in predictable ways:
+
+- **They scroll away.** Each new reply buries the last one's suggestions, and the good ideas are forgotten.
+- **You lose track of what's open.** With several lines of work going at once, nothing tells you what is still left, or what matters most.
+- **Acting on one means retyping it.** You copy or paraphrase a suggestion back into the prompt box.
+- **Not every suggestion is a prompt.** "Try the new pane" or "pick a license" are for you to do, mixed in with work for Claude.
+- **Lists go stale.** Finished items linger and old ideas crowd out what matters now.
+
+## What upnext does
+
+- **Collects** suggestions from replies and tool output as they appear, grouped by line of work.
+- **Ranks** them and shows the top three, with the reason for each, right above the prompt box. One key acts on a step.
+- **Clears** steps as they get done: by a prompt you type, a commit, a passing test run, or a click. Untouched ones fade and then fold away.
+- **Separates** steps for you (try, check, decide) from prompts for Claude, so yours are never sent by accident.
+
+Each session keeps its own list.
+
+## How it looks
+
 **Up next** keeps the next steps Claude suggests, ranks them, and shows the three that matter most right above the prompt box:
 
 ```
