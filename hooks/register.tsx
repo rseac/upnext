@@ -2000,7 +2000,7 @@ async function draftIssues($: EngineInterface) {
 
 export const register: Register = (on, options) => {
   cfg.sendOnClick = options.clickAction === 'send'
-  cfg.autoOpen = options.autoOpen !== false
+  cfg.autoOpen = options.autoOpen === true
   cfg.ghostText = options.ghostText !== false
   cfg.statusLine = options.statusLine !== false
   cfg.extractor = options.extractor === 'heuristic' || options.extractor === 'model' ? options.extractor : 'auto'
@@ -2013,6 +2013,7 @@ export const register: Register = (on, options) => {
   cfg.oldAfter = typeof options.oldAfter === 'number' ? options.oldAfter : 30
   const scanTools = options.scanToolOutput !== false
   const showBand = options.band !== false
+  const bandList = options.bandStyle !== 'row'
   const keepAcrossSessions = options.keepAcrossSessions !== false
   const useHerdr = options.paneStyle !== 'claude'
   herdr.style = options.paneStyle === 'split' ? 'split' : 'popup'
@@ -2322,12 +2323,64 @@ export const register: Register = (on, options) => {
       const turn = await read($, turnA)
       if ((await read($, bandHiddenA)) >= turn) return below
       const bandRoots = await read($, rootsA)
+      const { Box, Text, Button } = $.ui.resolve(e)
+      if (bandList) {
+        // Three lines: the top three steps, each with why. Yours are safe here:
+        // a number ticks a check off, or starts your answer to a decision.
+        const ranked = ranking(bandRoots, await read($, rankA), turn).top.slice(0, BAND_ITEMS)
+        const items: Ranked[] = ranked.length > 0 ? ranked : topSteps(treeOf(bandRoots, turn), BAND_ITEMS).map(t => ({ ...t, why: '' }))
+        if (items.length === 0) return below
+        const cols = e.props.bodyColumns
+        const STATUS_MARK: Record<StepStatus, { glyph: string; color: string }> = {
+          open: { glyph: '○', color: 'inactive' },
+          queued: { glyph: '◌', color: 'permission' },
+          running: { glyph: '◐', color: 'warning' },
+          done: { glyph: '✓', color: 'success' },
+          failed: { glyph: '✗', color: 'error' },
+        }
+        const clipTo = (t: string, w: number) => (widthOf(t) > w ? `${[...t].slice(0, Math.max(1, w - 1)).join('')}…` : t)
+        return (
+          <Box flexDirection="column">
+            {below}
+            {items.map(({ root, step, why }, i) => {
+              const mark =
+                step.forYou === 'check' && step.status !== 'done'
+                  ? { glyph: '☐', color: 'ide' }
+                  : step.forYou === 'decide' && step.status !== 'done'
+                    ? { glyph: '?', color: 'warning' }
+                    : STATUS_MARK[step.status]
+              const tag = clipTo(plain(root.title).replace(/`/g, ''), 14)
+              const hide = i === 0 ? 9 : 0
+              const reason = why !== '' ? why : step.forYou === 'decide' ? 'yours to decide' : step.forYou === 'check' ? 'yours to try' : ''
+              const textW = Math.max(12, Math.floor((cols - 3 - 2 - widthOf(tag) - 3 - hide) * 0.55))
+              const text = clipTo(plain(step.text).replace(/`/g, ''), textW)
+              const whyW = Math.max(0, cols - 3 - 2 - widthOf(text) - 3 - widthOf(tag) - 3 - hide)
+              return (
+                <Box key={`bl:${step.id}`} flexDirection="row">
+                  <Button key={`b:${step.id}`} plain hotkey={String(i + 1)} onPress={() => void click($, step.id)}>
+                    <Text color={mark.color}>{mark.glyph}</Text> <Text>{text}</Text>
+                  </Button>
+                  {reason !== '' && whyW > 8 && <Text dimColor>{` · ${clipTo(reason, whyW)}`}</Text>}
+                  <Box flexGrow={1} />
+                  <Text color={colorOf(root)}>● </Text>
+                  <Text dimColor>{tag}</Text>
+                  {i === 0 && <Text>{'  '}</Text>}
+                  {i === 0 && (
+                    <Button key="b:hide" plain dimColor hotkey="0" onPress={() => void update($, bandHiddenA, () => turn)}>
+                      hide
+                    </Button>
+                  )}
+                </Box>
+              )
+            })}
+          </Box>
+        )
+      }
       const ranked = ranking(bandRoots, await read($, rankA), turn)
         .top.filter(t => isPrompt(t.step))
         .slice(0, BAND_ITEMS)
       const top = ranked.length > 0 ? ranked : topSteps(treeOf(bandRoots, turn), BAND_ITEMS)
       if (top.length === 0) return below
-      const { Box, Text, Button } = $.ui.resolve(e)
       const room = Math.max(12, Math.floor((e.props.bodyColumns - 14) / top.length) - 7)
       const label = (s: Step) => {
         const t = plain(s.text).replace(/`/g, '')

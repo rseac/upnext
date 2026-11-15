@@ -71,13 +71,13 @@ test('a step for you to try ticks off on click; a decision starts your answer', 
   await ui.unmount()
 })
 
-test("your steps stay out of a stream's ▶ and the 1/2/3 row", async ($, on) => {
+test("your steps stay out of a stream's ▶; above the prompt they show with their marks", async ($, on) => {
   const { sent } = engine(on)
   await $.session.start({ cwd: '/w2', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
   const band = await $.ui.mount(BAND as never)
   const labels = (await band.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('b:') && b.key !== 'b:hide').map(b => b.text)
-  expect(labels).toEqual(['● Add integration tests for the parser'])
+  expect(labels.sort()).toEqual(['? Pick a license (MIT if unsure)', '○ Add integration tests for the parser', '☐ Try the new pane'])
   await band.unmount()
 
   const ui = await $.ui.mount(PANE)

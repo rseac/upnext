@@ -1,6 +1,6 @@
 {
   "name": "upnext",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
   "author": {
     "name": "rseac"
@@ -88,8 +88,18 @@
     "band": {
       "type": "boolean",
       "title": "Show the top steps above the prompt",
-      "description": "A row above the prompt box with the top three open steps: press 1, 2 or 3 from an empty prompt box to use one, 0 to hide the row until the next turn.",
+      "description": "The top three steps, above the prompt box: press 1, 2 or 3 from an empty prompt box to act on one (a prompt is drafted, a check is ticked, a decision starts your answer), 0 to hide them until the next turn.",
       "default": true
+    },
+    "bandStyle": {
+      "type": "string",
+      "title": "How the top steps show above the prompt",
+      "description": "list: three lines, the top three steps, each with why and its stream. row: one line with the three steps side by side.",
+      "default": "list",
+      "options": [
+        "list",
+        "row"
+      ]
     },
     "ghostText": {
       "type": "boolean",
@@ -112,8 +122,8 @@
     "autoOpen": {
       "type": "boolean",
       "title": "Open the pane when new steps arrive",
-      "description": "Opens the pane beside the transcript when steps are found, unless you closed it.",
-      "default": true
+      "description": "Opens the pane beside the transcript when steps arrive, unless you closed it. Off by default: the three lines above the prompt show the top steps, and /upnext opens the pane.",
+      "default": false
     },
     "paneStyle": {
       "type": "string",

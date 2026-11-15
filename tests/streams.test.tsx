@@ -138,7 +138,7 @@ test('the 1/2/3 row offers the most important steps first', async ($, on) => {
   const ui = await $.ui.mount(BAND as never)
   const labels = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('b:') && b.key !== 'b:hide').map(b => b.text)
   // "Fix broken…" fixes something broken; then each stream's first step.
-  expect(labels).toEqual(['● Fix broken README links', '● Document the new CLI flags', '● Rotate the signing key'])
+  expect(labels).toEqual(['○ Fix broken README links', '○ Document the new CLI flags', '○ Rotate the signing key'])
   await ui.unmount()
 })
 
@@ -157,7 +157,7 @@ test('⊟ archives a stream out of the tree and the band; restore brings it back
 
   const band = await $.ui.mount(BAND as never)
   const labels = (await band.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('b:') && b.key !== 'b:hide').map(b => b.text)
-  expect(labels).toEqual(['● Document the new CLI flags'])
+  expect(labels).toEqual(['○ Document the new CLI flags'])
   await band.unmount()
 
   await ui.press({ key: 'arch-tg' })

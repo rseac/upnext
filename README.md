@@ -1,6 +1,17 @@
 # upnext
 
-An **Up next** pane beside the transcript that collects the next steps Claude suggests and shows them as a tree you can act on.
+**Up next** keeps the next steps Claude suggests, ranks them, and shows the three that matter most right above the prompt box:
+
+```
+> your prompt…
+1: ✗ Document the --quiet flag · tried before and still failing      ● Docs   0: hide
+2: ○ Fix the crash on startup · users hit it on every launch          ● Auth
+3: ? Pick a license (MIT if unsure) · yours to decide                  ● Docs
+```
+
+From an empty prompt box, `1` `2` `3` act on a step: a prompt is drafted for you to send, a check (☐) is ticked off, a decision (?) starts your answer. `0` hides the lines until the next turn.
+
+The whole list, as a tree grouped by line of work, opens with `/upnext` (a pane beside the transcript) or, inside herdr, `prefix+u` (a popup):
 
 ```
 ✦ Up next                               5 open · 1 done
@@ -9,18 +20,6 @@ An **Up next** pane beside the transcript that collects the next steps Claude su
  ├─ ○ Move token check into middleware   ▶ ✎ ✕
  ├─ ○ Add expiry tests •                 ▶ ✎ ✕
  └─ ✓ Remove the old session table       ▶ ✎ ✕
-
-▾ ● Docs · turn 8                 2 ✎ + ▶▶ ⇶ ▶ ✕
- ├─ ○ Document the new flags             ▶ ✎ ✕
- └─ ○ Fix broken links in README         ▶ ✎ ✕
-
-▸ ☐ Todo list                                  1 ✕
-```
-
-The top three open steps also sit in a row above the prompt box:
-
-```
-✦ next  1: Add unit tests for the parser  2: Update the README  0: hide
 ```
 
 ## Install
@@ -65,7 +64,7 @@ How they're picked, cheapest first:
 2. **Haiku, when new steps arrive** and four or more are open: it gets a short brief (the open steps, your last few prompts, the start of the last reply, failing test lines), a few thousand tokens to a small model, never a copy of the conversation. Turns that add no steps cost nothing.
 3. **On demand:** `p` re-ranks at any time.
 
-Everything else stays under **everything else**, folded once more than eight steps are open (`e` unfolds). The 1/2/3 row, ghost text and herdr's sidebar line all use the ranking. Set `rank` to `local` for the free score only, or `off` for the plain list.
+Everything else stays under **everything else**, folded once more than eight steps are open (`e` unfolds). The three lines above the prompt, ghost text and herdr's sidebar line all use the ranking. Set `rank` to `local` for the free score only, or `off` for the plain list.
 
 ## Steps for Claude, and steps for you
 
@@ -77,7 +76,7 @@ Not every next step is a prompt. Replies also list things for you to do, and tho
 | ☐ | For you to try or check | Try the new pane · Press `p` · Check that ✓ steps leave | ticks it off |
 | ? | For you to decide | Pick a license · Say whether to build X | starts your answer: `Pick a license: ` |
 
-Word rules sort them as they arrive (try, check that, press, restart… for checks; pick, choose, decide, say whether… for decisions), and Haiku corrects them when it re-ranks. `w` switches a step between the three kinds, and that choice sticks. Your steps can rank among the most important (tagged **you**), but stay out of ghost text, the 1/2/3 row, ▶ on a stream, ▶▶ and hand-offs.
+Word rules sort them as they arrive (try, check that, press, restart… for checks; pick, choose, decide, say whether… for decisions), and Haiku corrects them when it re-ranks. `w` switches a step between the three kinds, and that choice sticks. Your steps can rank among the most important (tagged **you**), but stay out of ghost text, ▶ on a stream, ▶▶ and hand-offs. Above the prompt they show with their mark, and their number ticks them off or starts your answer.
 
 ## Newest first, and steps that age
 
@@ -118,10 +117,9 @@ Each line of work gets its own **stream** (●), kept across turns:
 - **Fixing it up:**
   - ✎ on a stream renames it, and offers **merge into → another stream**.
   - ✎ on a step offers **move to → another stream** or **→ new stream**.
-- **Above the prompt:** the 1/2/3 row shows the top step of each stream first.
 - **Not streams:** Bash hints, the todo list and "Likely next" guesses stay as their own groups.
-- **Colours:** each stream gets its own colour, picked so neighbours differ. The 1/2/3 row marks each step with its stream's colour.
-- **Archive (⊟):** parks a stream. It leaves the tree, the 1/2/3 row and the count, and waits under **Archived** at the bottom of the pane until you press **restore**. If a reply picks the topic up again, the stream comes back by itself.
+- **Colours:** each stream gets its own colour, picked so neighbours differ. The lines above the prompt show each step's stream in its colour.
+- **Archive (⊟):** parks a stream. It leaves the tree, the lines above the prompt and the count, and waits under **Archived** at the bottom of the pane until you press **restore**. If a reply picks the topic up again, the stream comes back by itself.
 - **One stream only (◎):** shows just that stream. **Show all** (`a`) brings the rest back. `/upnext <name>` does the same from the prompt.
 - **Nudges:** a stream with open steps and no activity for 10 turns gets one toast, so it isn't forgotten. Change or turn off with `nudgeAfter`.
 
@@ -146,7 +144,7 @@ When Claude Code runs inside [herdr](https://herdr.dev), Up next stays out of th
 - **Hand a step to another agent:** ➜ (or `h`) lists the other agent panes herdr knows (Claude, Codex and others). Pick one and the step is sent to it as a prompt. The step shows ➜ and the agent's name while it works, then ✓ or ✗; a toast says when that agent is waiting for you.
 - **Or a pane that stays open:** set `paneStyle` to `split`, or run `/upnext split`.
 
-Outside herdr none of this applies: the pane inside Claude, the status line and the 1/2/3 row do the same jobs.
+Outside herdr none of this applies: the lines above the prompt, the status line and the pane inside Claude do the same jobs.
 
 ### One-time setup
 
@@ -213,7 +211,7 @@ The row under the mouse lights up.
 | ✎ on a step | Edits its text in place. Enter saves; ✕ cancels. |
 | ⇶ on a group | Hands each open step (up to five) to its own background agent. Each step shows ⇶ while its agent works, then ✓ or ✗, with a toast. |
 | Hover a step | Shows the full prompt it will draft or send (terminal). |
-| `1` `2` `3` | From an empty prompt box: drafts that step from the row above the prompt. `0` hides the row until the next turn. |
+| `1` `2` `3` | From an empty prompt box: acts on that step from the lines above the prompt (drafts a prompt, ticks a check, starts your answer to a decision). `0` hides them until the next turn. |
 | Tab | Takes the top new step, shown as dim ghost text in the prompt box. |
 | ✕ | Dismisses the step or the group. |
 | ▾ / ▸ | Folds or unfolds. |
@@ -263,11 +261,12 @@ Step text comes from replies and tool output, which can quote files and web page
 | `extractor` | `auto` | `auto`: read replies for free, and ask a fork of the session only when a reply lists nothing, or to check steps you ran. `heuristic`: never call a model. `model`: always ask the fork, which sees the whole conversation and reuses its prompt cache (about one short reply per turn). The pane shows "finding steps…" while it works. |
 | `minAnswerChars` | `80` | Replies shorter than this never trigger a model call. |
 | `nudgeAfter` | `10` | Turns a stream can sit idle with open steps before one toast says so. `0` turns nudges off. |
-| `band` | `true` | Shows the top three open steps above the prompt box. |
+| `band` | `true` | Shows the top three steps above the prompt box. |
+| `bandStyle` | `list` | `list`: three lines, each step with why and its stream. `row`: one line with the three steps side by side. |
 | `ghostText` | `true` | Offers the top new step as dim text in the prompt box. |
 | `statusLine` | `true` | Shows "✦ 3 next steps" in the status line. |
 | `keepAcrossSessions` | `true` | Saves each session's open steps, and brings them back when you resume that session. |
-| `autoOpen` | `true` | Opens the pane when new steps arrive. |
+| `autoOpen` | `false` | Opens the pane beside the transcript when new steps arrive. Off by default: the lines above the prompt carry the top steps, and `/upnext` opens the pane. |
 | `scanToolOutput` | `true` | Reads Bash output and todo/task lists too. |
 | `autoTick` | `true` | Ticks steps off after a commit that covers them, or a test run that passes. |
 | `rank` | `auto` | `auto`: free scoring every turn, plus a Haiku re-rank when new steps arrive. `local`: free scoring only. `off`: no ranked section. |

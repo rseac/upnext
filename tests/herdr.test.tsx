@@ -62,7 +62,7 @@ function engine(on: On, env: Record<string, string>, actions: string[] = []) {
 const HERDR = { HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: '/bin/herdr', HOME: '/home/t' }
 const ANSWER = '## Auth follow-ups\n- Rotate the signing key\n- Audit the token store'
 
-test('paneStyle "split": steps open a herdr pane with the viewer instead of the pane inside Claude', { options: { paneStyle: 'split' } }, async ($, on) => {
+test('paneStyle "split": steps open a herdr pane with the viewer instead of the pane inside Claude', { options: { paneStyle: 'split', autoOpen: true } }, async ($, on) => {
   const { runs, files, opened } = engine(on, HERDR)
   await $.session.start({ cwd: '/h1', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
@@ -105,7 +105,7 @@ test('keys pressed in the viewer reach the mod: a step is drafted, another dropp
   expect(files['/home/t/.claude/upnext/herdr/w1-p1.json']).not.toContain('Audit')
 })
 
-test('outside herdr nothing changes: the pane inside Claude opens, and /upnext herdr says why not', async ($, on) => {
+test('outside herdr (with autoOpen) the pane inside Claude opens, and /upnext herdr says why not', { options: { autoOpen: true } }, async ($, on) => {
   const { runs, opened } = engine(on, { HOME: '/home/t' })
   await $.session.start({ cwd: '/h3', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
@@ -117,7 +117,7 @@ test('outside herdr nothing changes: the pane inside Claude opens, and /upnext h
   await ui.unmount()
 })
 
-test('paneStyle "claude" keeps the pane inside Claude in herdr; /upnext herdr and split open on request', { options: { paneStyle: 'claude' } }, async ($, on) => {
+test('paneStyle "claude" keeps the pane inside Claude in herdr; /upnext herdr and split open on request', { options: { paneStyle: 'claude', autoOpen: true } }, async ($, on) => {
   const { runs, opened } = engine(on, HERDR)
   await $.session.start({ cwd: '/h4', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
