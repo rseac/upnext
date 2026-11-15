@@ -2949,7 +2949,7 @@ export const register: Register = (on, options) => {
             </Box>,
             <Text key={`tw:${step.id}`} dimColor>
               {'        '}
-              {why}
+              {widthOf(why) > cols - 9 ? `${[...why].slice(0, Math.max(4, cols - 10)).join('')}…` : why}
             </Text>,
           ]
         })}

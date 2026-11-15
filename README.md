@@ -27,27 +27,15 @@ Each session keeps its own list.
 
 ## How it looks
 
-**Up next** keeps the next steps Claude suggests, ranks them, and shows the three that matter most right above the prompt box:
+Claude finishes a reply with five suggestions. Up next ranks them and puts the three that matter most right above the prompt box, each with the reason it matters. The leaked signing key goes to the top:
 
-```
-> your prompt…
-1: ✗ Document the --quiet flag · tried before and still failing      ● Docs   0: hide
-2: ○ Fix the crash on startup · users hit it on every launch          ● Auth
-3: ? Pick a license (MIT if unsure) · yours to decide                  ● Docs
-```
+![The top three steps, ranked with reasons, above the Claude Code prompt box](docs/above-the-prompt.png)
 
 From an empty prompt box, `1` `2` `3` act on a step: a prompt is drafted for you to send, a check (☐) is ticked off, a decision (?) starts your answer. `0` hides the lines until the next turn.
 
-The whole list, as a tree grouped by line of work, opens with `/upnext` (a pane beside the transcript) or, inside herdr, `prefix+u` (a popup):
+The whole list opens with `/upnext`, as a pane beside the transcript: the ranked steps with their reasons, then everything grouped by line of work. Steps for you are marked ? (decide) and ☐ (try), and are never sent to Claude:
 
-```
-✦ Up next                               5 open · 1 done
-───────────────────────────────────────────────────────
-▾ ● Auth · turn 9                 3 ✎ + ▶▶ ⇶ ▶ ✕
- ├─ ○ Move token check into middleware   ▶ ✎ ✕
- ├─ ○ Add expiry tests •                 ▶ ✎ ✕
- └─ ✓ Remove the old session table       ▶ ✎ ✕
-```
+<p align="center"><img src="docs/full-list.png" alt="The full Up next list in a pane beside the transcript" width="520"></p>
 
 ## Install
 
@@ -182,17 +170,9 @@ Each line of work gets its own **stream** (●), kept across turns:
 
 ## Inside herdr
 
-When Claude Code runs inside [herdr](https://herdr.dev), Up next stays out of the way until you ask for it:
+When Claude Code runs inside [herdr](https://herdr.dev), Up next stays out of the way until you ask for it. `prefix+u` opens the list as a popup over Claude's pane:
 
-```
-┌─ claude ─────────────────────────────────────────────┐
-│ transcript…    ┌─ Up next ────────────────────────┐  │
-│                │ ● Auth  2               ▶ ⊟ ✕    │  │
-│                │ ├─ ○ Rotate the key     ➜ ▶ ✕    │  │
-│                │ └─ ◐ Audit the store    ➜ ▶ ✕    │  │
-│ > _            └──────────────────────────────────┘  │
-└──────────────────────────────────────────────────────┘
-```
+<p align="center"><img src="docs/herdr-popup.png" alt="The Up next popup in herdr" width="540"></p>
 
 - **A popup on a key:** `prefix+u` (or `/upnext herdr`) opens the tree over Claude's pane. Picking a step drafts it in Claude's prompt box and closes the popup; Esc or `q` closes it without picking. Your layout never changes.
 - **A line in herdr's sidebar** under the Claude agent: `3 next · Auth: Rotate the key`.
