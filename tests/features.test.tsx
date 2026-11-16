@@ -214,6 +214,25 @@ test('/upnext export writes a checklist', { options: { clearDoneAfter: -1 } }, a
   expect(text).toContain('- [x] Ship it')
 })
 
+test('/upnext carry imports open steps from an exported checklist as earlier', async ($, on) => {
+  const { drafted } = engine(on)
+  on('fs.read', () => ({ value: '# Next steps\n\n## Auth\n\n- [x] Rotate keys\n- [ ] Audit token store\n' }))
+  await $.session.start({ cwd: '/proj-carry', surface: 'terminal', isInteractive: true })
+  const r = await $.command.run({
+    command: 'upnext',
+    args: 'carry plan.md',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 120 },
+  })
+  expect(r.text).toBe('Carried over 1 open step from plan.md.')
+  const ui = await $.ui.mount(PANE)
+  const row = await stepRow(ui, /Audit token store/)
+  expect(row).toBeDefined()
+  await ui.press({ key: row!.key! })
+  expect(drafted.at(-1)).toContain('This step is from an earlier conversation, under "Auth".')
+  await ui.unmount()
+})
+
 test('▶▶ runs a group one step per turn, and stops at one not done', async ($, on) => {
   const { sent } = engine(on)
   await $.session.start({ cwd: '/proj-j', surface: 'terminal', isInteractive: true })

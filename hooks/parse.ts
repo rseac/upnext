@@ -385,6 +385,42 @@ export function parseReply(md: string): ParsedRoot[] {
   return [...sections, ...offers]
 }
 
+/** Parses an exported Markdown checklist (`## Stream` + `- [ ] step`) into open groups. */
+export function parseChecklist(md: string): ParsedRoot[] {
+  const roots: ParsedRoot[] = []
+  let title = 'Carried over'
+  let steps: ParsedStep[] = []
+  let stack: { indent: number; node: ParsedStep }[] = []
+  const flush = () => {
+    if (steps.length > 0) roots.push({ kind: 'reply', title: tidy(title) || 'Carried over', steps, stream: tidy(title) || undefined })
+    steps = []
+    stack = []
+  }
+  for (const raw of md.split(/\r?\n/)) {
+    const h = HEADING.exec(raw)
+    if (h) {
+      if (h[1]!.length >= 2) {
+        flush()
+        title = h[2]!.replace(/\s*\(archived\)\s*$/i, '')
+      }
+      continue
+    }
+    const m = LIST.exec(raw)
+    if (!m || m[2]?.toLowerCase() === 'x') continue
+    const indent = indentOf(m[1]!)
+    const text = tidy(m[3]!)
+    if (text === '') continue
+    const node: ParsedStep = { text, children: [] }
+    while (stack.length > 0 && stack[stack.length - 1]!.indent >= indent) stack.pop()
+    const parent = stack[stack.length - 1]?.node
+    if (parent) parent.children.push(node)
+    else steps.push(node)
+    stack.push({ indent, node })
+  }
+  flush()
+  return roots
+}
+
 /**
  * The slash command a step runs, if it is one: "/review high", "`/review`",
  * "Run `/review high`". Returns the command line without backticks.

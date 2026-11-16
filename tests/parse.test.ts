@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { clean, forYouOf, parseReply, parseToolText, wrapRuns, runsOf } from '../hooks/parse'
+import { clean, forYouOf, parseChecklist, parseReply, parseToolText, wrapRuns, runsOf } from '../hooks/parse'
 
 const REPLY = `Done: the parser now handles nested lists.
 
@@ -84,4 +84,13 @@ test('soft cues with no clear action are marked weak, while strong cues are not'
   expect(strong[0]?.isWeak).toBeUndefined()
   const actionIdea = parseReply('## Ideas\n- Add caching for large repos')
   expect(actionIdea[0]?.isWeak).toBeUndefined()
+})
+
+test('parseChecklist reads open items by stream and skips completed ones', async () => {
+  const md = `# Next steps\n\n## Auth (archived)\n\n- [x] Rotate keys\n- [ ] Audit token store\n  - [ ] Check refresh TTL\n\n## Docs\n\n- [ ] Update README\n`
+  const roots = parseChecklist(md)
+  expect(roots.map(r => r.title)).toEqual(['Auth', 'Docs'])
+  expect(roots[0]!.steps.map(s => s.text)).toEqual(['Audit token store'])
+  expect(roots[0]!.steps[0]!.children.map(s => s.text)).toEqual(['Check refresh TTL'])
+  expect(roots[1]!.steps.map(s => s.text)).toEqual(['Update README'])
 })

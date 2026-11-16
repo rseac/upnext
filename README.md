@@ -218,6 +218,7 @@ The popup needs `python3`. It reads a state file in `~/.claude/upnext/herdr/` an
 | | `r` | Runs the marked steps in order, one per turn, stopping at one that isn't done |
 | ✕ | `x` | Dismisses the step or stream |
 | ⊟ | `a` | Archives the stream |
+| | `t` / `c` | Tidies stale steps via a session fork / clears done steps |
 | Click a stream's name | Space | Folds or unfolds it |
 | Wheel | | Scrolls |
 | | `q` or Esc | Closes |
@@ -282,6 +283,7 @@ When a step's turn ends, it gets ✓, or ✗ if the reply says it couldn't finis
 | `/upnext split` | Opens the herdr pane that stays beside Claude's. |
 | `/upnext clear` | Empties the pane and the saved copy. |
 | `/upnext export [file]` | Writes every step as a Markdown checklist (default `NEXT_STEPS.md`). |
+| `/upnext carry [file]` | Imports open steps from an exported checklist (default `NEXT_STEPS.md`) into this session, marked "earlier". |
 | `/upnext issues` | Drafts a prompt asking Claude to turn the open steps into GitHub issues, showing them to you first. Nothing is created until you send it and approve. |
 
 ### Safety

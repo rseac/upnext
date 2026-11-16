@@ -7,6 +7,7 @@ import {
   commandOf,
   forYouOf,
   keyOf,
+  parseChecklist,
   parseReply,
   parseToolText,
   plain,
@@ -2014,6 +2015,26 @@ async function exportSteps($: EngineInterface, path: string): Promise<string> {
   return `Wrote ${n} step${n === 1 ? '' : 's'} to ${path}.`
 }
 
+async function carrySteps($: EngineInterface, path: string): Promise<string> {
+  let text = ''
+  try {
+    text = await $.fs.read(path)
+  } catch {
+    return `Could not read ${path}.`
+  }
+  const parsed = parseChecklist(text)
+  if (parsed.length === 0) return `No open steps found in ${path}.`
+  const turn = await read($, turnA)
+  const markEarlier = (steps: Step[]): Step[] => steps.map(s => ({ ...s, isEarlier: true, children: markEarlier(s.children) }))
+  const incoming: Incoming[] = parsed.map(p => {
+    const r = toRoot(p, turn)
+    return { ...r, steps: markEarlier(r.steps) }
+  })
+  await addRoots($, incoming)
+  const n = parsed.flatMap(p => p.steps).length
+  return `Carried over ${n} open step${n === 1 ? '' : 's'} from ${path}.`
+}
+
 async function draftIssues($: EngineInterface) {
   const roots = live(await read($, rootsA)).filter(r => r.kind !== 'likely')
   const list = roots
@@ -2061,8 +2082,8 @@ export const register: Register = (on, options) => {
     cfg.sessionId = await $.session.id().catch(() => '')
     await $.command.register({
       name: 'upnext',
-      description: 'Show the Up next pane. Also: herdr, split, <stream> to show one stream, all, clear, export [file], issues',
-      argumentHint: '[herdr | split | <stream> | all | clear | export [file] | issues]',
+      description: 'Show the Up next pane. Also: herdr, split, <stream> to show one stream, all, clear, export [file], carry [file], issues',
+      argumentHint: '[herdr | split | <stream> | all | clear | export [file] | carry [file] | issues]',
     })
     herdr.inside = (await $.env.get('HERDR_PANE_ID').catch(() => undefined)) ?? ''
     herdr.pane = useHerdr ? herdr.inside : ''
@@ -2105,6 +2126,8 @@ export const register: Register = (on, options) => {
         return { text: 'Cleared the Up next pane.' }
       case 'export':
         return { text: await exportSteps($, rest.join(' ') || 'NEXT_STEPS.md') }
+      case 'carry':
+        return { text: await carrySteps($, rest.join(' ') || 'NEXT_STEPS.md') }
       case 'herdr':
       case 'split': {
         if (herdr.inside === '' || herdr.dir === '') return { text: 'Claude is not running inside herdr, so there is no herdr pane to open.' }
