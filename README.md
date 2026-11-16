@@ -55,36 +55,30 @@ claude plugin install upnext --marketplace rseac/upnext
 
 In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `rseac/upnext`, then Add plugin.
 
-This repository is private, so before installing:
-
-1. Ask the owner to invite you as a collaborator on GitHub, and accept the invite.
-2. Make sure your machine has a git credential for github.com: an SSH key, or `gh auth login` then `gh auth setup-git`. The install never asks for one.
-
 ## Set up with an agent
 
 Point Claude Code (or another coding agent) at this section and it will set upnext up for you. Paste this into a Claude Code session:
 
 ```
-Set up upnext by following the "Set up with an agent" section of the README in the GitHub repo rseac/upnext. Read it with `gh` (the repo is private).
+Set up upnext by following the "Set up with an agent" section of the README in the GitHub repo rseac/upnext.
 ```
 
 ### Steps for the agent
 
 Do these in order. Report each step's result in one line. Stop and ask the person before changing anything not listed here.
 
-1. **Check access.** Run `gh auth status`. The repository is private: if this fails or `gh repo view rseac/upnext` is refused, stop and tell the person they need a GitHub invite to `rseac/upnext` and `gh auth login`, then `gh auth setup-git`.
-2. **Check it is not installed already.** Run `claude plugin list`. If `upnext` is listed and enabled, skip to step 5.
-3. **Add the marketplace:** `claude plugin marketplace add rseac/upnext`
-4. **Install for this user:** `claude plugin install upnext@upnext -s user`
+1. **Check it is not installed already.** Run `claude plugin list`. If `upnext` is listed and enabled, skip to step 4.
+2. **Add the marketplace:** `claude plugin marketplace add rseac/upnext`
+3. **Install for this user:** `claude plugin install upnext@upnext -s user`
    Then run `claude plugin list` and confirm `upnext` shows as enabled.
-5. **Settings (only if the person asked for any).** Defaults suit most people. To change one, reinstall with `--config`, for example `claude plugin install upnext@upnext -s user --config rank=local`. The options are in the [Options](#options) table.
-6. **herdr (only if the person uses it).** Skip this step unless `command -v herdr` succeeds.
+4. **Settings (only if the person asked for any).** Defaults suit most people. To change one, reinstall with `--config`, for example `claude plugin install upnext@upnext -s user --config rank=local`. The options are in the [Options](#options) table.
+5. **herdr (only if the person uses it).** Skip this step unless `command -v herdr` succeeds.
    1. Find the installed copy: `find ~/.claude/plugins -name herdr-plugin.toml -path '*upnext*' | head -1`. The folder holding that file is the herdr plugin.
    2. Link it: `herdr plugin link <that folder>`.
    3. Open `~/.config/herdr/config.toml` (create it if missing). If it does **not** already bind `prefix+u` or define `[ui.sidebar.agents]`, append the block from [One-time setup](#one-time-setup). If either already exists, show the person the block and ask before changing anything.
    4. Run `herdr config check`, and only if it prints `Config: ok`, run `herdr server reload-config`.
    5. Check `python3 --version` works; the popup needs it.
-7. **Finish.** Tell the person to restart Claude Code (plugins load at start), and what to expect: after a reply that suggests next steps, the top three appear above the prompt box; `/upnext` opens the full list; in herdr, `prefix+u` (Ctrl+B, then u) opens it as a popup.
+6. **Finish.** Tell the person to restart Claude Code (plugins load at start), and what to expect: after a reply that suggests next steps, the top three appear above the prompt box; `/upnext` opens the full list; in herdr, `prefix+u` (Ctrl+B, then u) opens it as a popup.
 
 Undo: `claude plugin uninstall upnext@upnext`, and in herdr `herdr plugin unlink upnext` plus removing the block from `~/.config/herdr/config.toml`.
 
