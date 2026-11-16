@@ -118,6 +118,8 @@ declare module 'claude-code' {
       showAll: boolean | null
       /** Whether the "older" group at the bottom is unfolded. */
       showOld: boolean
+      /** Whether "Clear all" is waiting for a second click to confirm. */
+      confirmClear: boolean
     }
   }
 }

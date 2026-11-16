@@ -9,6 +9,8 @@ export type ParsedRoot = {
   steps: ParsedStep[]
   /** The stream the model put it in, when a model read the reply. */
   stream?: string
+  /** True when the section came from a softer cue (e.g. "Ideas", "Consider") with no clear action. */
+  isWeak?: boolean
 }
 
 // Headings and lead-ins that introduce things to do.
@@ -16,6 +18,9 @@ const CUE =
   /(?:^\W*(?:up )?next\W*$)|\b(next steps?|next up|what'?s next|what'?s left|what remains|still open|open items|before (?:merging|shipping|release)|where to go from here|going forward|suggest(?:ed|ions?)?|follow[- ]?ups?|to[- ]?dos?|action items?|recommend(?:ed|ations?)?|(?:some|a few|possible|your|other) options|you (?:could|can|might|may)(?: also)?|remaining|still to do|left to do|not (?:yet )?done|ideas|consider|further (?:work|improvements|steps)|possible (?:improvements|enhancements|extensions)|future work|want me to|would you like|should i|i can also|happy to|optional)\b/i
 // Extra cues that only make sense in tool output (scaffolders, installers).
 const TOOL_CUE = /\b(get(?:ting)? started|now run|to fix|then run|next,? run)\b/i
+// Softer cues that often mix commentary with suggestions; verified by the model in auto mode when no step is clearly an action.
+const WEAK_CUE = /\b(ideas?|consider|options|optional|notes?|further (?:work|improvements)|possible (?:improvements|enhancements|extensions)|future work)\b/i
+const STRONG_CUE = /\b(next steps?|next up|what'?s next|what'?s left|follow[- ]?ups?|to[- ]?dos?|action items?|before (?:merging|shipping|release))\b/i
 
 const FENCE = /^\s*(```|~~~)/
 const LIST = /^(\s*)(?:[-*+•]|\d{1,3}[.)])\s+(?:\[([ xX])\]\s+)?(.+)$/
@@ -179,7 +184,15 @@ export function parseSections(
   const close = () => {
     if (section) {
       const steps = prune(kind === 'reply' ? keepSteps(section.steps) : section.steps)
-      if (steps.length > 0) roots.push({ kind, title: tidy(section.title), steps })
+      if (steps.length > 0) {
+        const title = tidy(section.title)
+        const isWeak =
+          kind === 'reply' &&
+          WEAK_CUE.test(title) &&
+          !STRONG_CUE.test(title) &&
+          !steps.some(s => isAction(s.text))
+        roots.push({ kind, title, steps, ...(isWeak ? { isWeak } : {}) })
+      }
     }
     section = undefined
   }

@@ -101,3 +101,19 @@ test('rank "off" shows the plain list, with no ranked section and no model call'
   expect(asked.length).toBe(0)
   await ui.unmount()
 })
+
+test('Haiku ranking can drop non-actionable noise without dropping your own steps', async ($, on) => {
+  engine(on, ['{"top":[{"n":1,"why":"fixes the crash"}],"drop":[2,5]}'])
+  await $.session.start({ cwd: '/r4', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount(PANE)
+  await ui.input({ key: 'add-mine', text: 'Keep my custom step' })
+  await $.turn.complete({
+    ...TURN,
+    answer: '## Next steps\n- Fix the crash on startup\n- Pure status note with no action\n- Add unit tests\n- Update the README',
+    turnId: 't1',
+  })
+  for (let i = 0; i < 100 && (await ui.findAll({ type: 'Button', text: /Pure status note/ })).length > 0; i++) await tick()
+  expect((await ui.findAll({ type: 'Button', text: /Pure status note/ })).length).toBe(0)
+  expect((await ui.findAll({ type: 'Button', text: /Keep my custom step/ })).filter(b => b.key?.startsWith('run:')).length).toBe(1)
+  await ui.unmount()
+})

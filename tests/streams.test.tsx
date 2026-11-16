@@ -219,3 +219,16 @@ test('streams get different colours', async ($, on) => {
   expect(colors[0]).not.toBe(colors[1])
   await ui.unmount()
 })
+
+test('archived streams stay when more than 24 groups arrive', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/s10', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: '## Auth follow-ups\n- Rotate the signing key', turnId: 't1' })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: `ar:${await headerKey(ui, /Auth/)}` })
+  for (let i = 2; i <= 28; i++) {
+    await $.turn.complete({ ...TURN, answer: `## Topic${i}\n- Handle item ${i} cleanly`, turnId: `t${i}` })
+  }
+  expect((await ui.findAll({ type: 'Button', text: /Archived · 1/ })).length).toBe(1)
+  await ui.unmount()
+})

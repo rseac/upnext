@@ -171,3 +171,25 @@ test('marked steps handed to an agent go as one numbered prompt', async ($, on) 
   const text = runs.find(r => r[1] === 'agent' && r[2] === 'prompt')![4]!
   expect(text).toContain('in order: (1) Rotate the signing key (2) Audit the token store')
 })
+
+test('tidy and clear-done actions from the herdr viewer reach the mod', { options: { clearDoneAfter: -1 } }, async ($, on) => {
+  const actions: string[] = []
+  const { files } = engine(on, HERDR, actions)
+  on('model.fork', () => ({
+    value: {
+      isAnswered: true as const,
+      text: '{"done":[1],"drop":[]}',
+      usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    },
+  }))
+  await $.session.start({ cwd: '/h8', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
+  actions.push('{"seq":1,"verb":"tidy","id":""}\n')
+  await $.turn.complete({ ...TURN, answer: 'ok', turnId: 't2' })
+  for (let i = 0; i < 100 && !files['/home/t/.claude/upnext/herdr/w1-p1.json']!.includes('"status":"done"'); i++) await tick()
+  expect(files['/home/t/.claude/upnext/herdr/w1-p1.json']).toContain('"status":"done"')
+  actions.push('{"seq":2,"verb":"clear-done","id":""}\n')
+  await $.turn.complete({ ...TURN, answer: 'ok', turnId: 't3' })
+  for (let i = 0; i < 100 && files['/home/t/.claude/upnext/herdr/w1-p1.json']!.includes('Rotate the signing key'); i++) await tick()
+  expect(files['/home/t/.claude/upnext/herdr/w1-p1.json']).not.toContain('Rotate the signing key')
+})

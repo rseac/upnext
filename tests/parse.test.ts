@@ -76,3 +76,12 @@ test('steps for the person are told apart from prompts for Claude', async () => 
   ]
   for (const [text, want] of cases) expect([text, forYouOf(text)]).toEqual([text, want])
 })
+
+test('soft cues with no clear action are marked weak, while strong cues are not', async () => {
+  const weak = parseReply('## Ideas\n- Performance could matter later\n- Memory usage in large repos')
+  expect(weak[0]?.isWeak).toBe(true)
+  const strong = parseReply('## Next steps\n- Performance could matter later\n- Memory usage in large repos')
+  expect(strong[0]?.isWeak).toBeUndefined()
+  const actionIdea = parseReply('## Ideas\n- Add caching for large repos')
+  expect(actionIdea[0]?.isWeak).toBeUndefined()
+})

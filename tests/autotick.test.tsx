@@ -71,3 +71,13 @@ test('a test run with failures ticks nothing', async ($, on) => {
   expect(await statusOf(ui, /failing parser test/)).toBe('○')
   await ui.unmount()
 })
+
+test('a commit does not tick a step on stop-word overlap alone', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/t4', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: '## Next steps\n- Add the tests', turnId: 't1' })
+  await $.tool.call({ tool: 'Bash', command: 'git commit -am "Add the banner"' } as never)
+  const ui = await $.ui.mount(PANE)
+  expect(await statusOf(ui, /Add the tests/)).toBe('○')
+  await ui.unmount()
+})

@@ -96,7 +96,7 @@ ASCII = {
     "more": "...",
 }
 
-HELP = "1-9 draft · j/k move · enter draft · s send · h agent · m mark · w who · x drop · p re-rank · e everything else · o older · q quit"
+HELP = "1-9 draft · j/k move · enter draft · s send · h agent · m mark · w who · x drop · p re-rank · t tidy · c clear done · e everything else · o older · q quit"
 HELP_ASCII = HELP
 
 
@@ -715,6 +715,10 @@ class Viewer:
             self.run_zone(("older", ""))
         elif k == "p":
             self.act("rank", "", "re-ranking…")
+        elif k == "t":
+            self.act("tidy", "", "tidying…")
+        elif k == "c":
+            self.act("clear-done", "", "clearing done…")
         elif k == "r" and self.marked:
             self.act("run-marked", self.marked[0], f"running {len(self.marked)} steps in order", ids=list(self.marked))
             self.marked = []
