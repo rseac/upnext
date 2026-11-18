@@ -9,7 +9,6 @@ import {
   keyOf,
   parseChecklist,
   parseReply,
-  parseToolText,
   plain,
   runsOf,
   widthOf,
@@ -28,7 +27,6 @@ const MAX_AGENTS = 5
 // Bump a tag when that value's fields change: older stored values are then
 // read as the initial value instead of being misread.
 const rootsA = atom({ plugin: 'upnext', key: 'roots' } as const, [], { shape: 'roots-1' })
-const pendingA = atom({ plugin: 'upnext', key: 'pending' } as const, [], { shape: 'pending-1' })
 const inflightA = atom({ plugin: 'upnext', key: 'inflight' } as const, [], { shape: 'inflight-1' })
 const turnA = atom({ plugin: 'upnext', key: 'turn' } as const, 0)
 const closedA = atom({ plugin: 'upnext', key: 'isClosedByPerson' } as const, false)
@@ -1342,34 +1340,50 @@ function candidates(roots: Root[], turn: number): { root: Root; step: Step; inde
   return out
 }
 
-function localScore(c: { root: Root; step: Step; index: number }, turn: number, asked: Set<string>): { score: number; why: string } {
+function localScore(
+  c: { root: Root; step: Step; index: number },
+  turn: number,
+  latestAsked: Set<string>,
+  earlierAsked: Set<string>,
+): { score: number; why: string } {
   const t = plain(c.step.text)
+  const stepAge = Math.max(0, ageOf(c.step, c.root, turn))
+  const streamAge = c.root.kind === 'stream' && c.root.turn > 0 ? Math.max(0, turn - c.root.turn) : stepAge
   const reasons: [number, string][] = []
-  if (c.step.status === 'failed') reasons.push([5, "didn't get done last time"])
+  if (c.step.status === 'failed') reasons.push([stepAge === 0 ? 5 : 3, "didn't get done last time"])
   if (rankCtx.testFailure !== '' && /\b(?:tests?|specs?|ci|build)\b/i.test(t) && /\b(?:fix|fail\w*|broken|red|pass\w*|green)\b/i.test(t)) {
     reasons.push([4, 'the last test run failed'])
   }
-  const own = words(t)
+  const own = meaningful(t)
   if (own.size >= 2) {
-    let shared = 0
-    for (const w of own) if (asked.has(w)) shared += 1
-    if (shared / own.size >= 0.5) reasons.push([4, 'you asked for this'])
+    let latestShared = 0
+    let earlierShared = 0
+    for (const w of own) {
+      if (latestAsked.has(w)) latestShared += 1
+      else if (earlierAsked.has(w)) earlierShared += 1
+    }
+    if (latestShared / own.size >= 0.5) reasons.push([4, 'you asked for this'])
+    else if (stepAge <= 1 && (latestShared + earlierShared) / own.size >= 0.5) reasons.push([1.5, 'you asked for this'])
   }
   const blocker = BLOCKER.exec(t)
   if (blocker) {
     const w = blocker[0].toLowerCase()
+    const weight = streamAge === 0 ? 3 : streamAge === 1 ? 1.5 : 0.75
     reasons.push([
-      3,
+      weight,
       /secur|vulnerab|leak|exposed|secret/.test(w) ? 'a security risk' : /^before /.test(w) ? 'needed before release' : 'fixes something broken',
     ])
   }
-  if (/\brecommend/i.test(t)) reasons.push([2, 'Claude recommended it'])
-  if (c.step.addedTurn !== undefined && c.step.addedTurn === turn) reasons.push([1.5, 'just suggested'])
+  if (/\brecommend/i.test(t)) reasons.push([streamAge === 0 ? 2 : 0.75, 'Claude recommended it'])
+  if (c.step.addedTurn !== undefined && c.step.addedTurn === turn) reasons.push([2.5, 'just suggested'])
   if (c.index === 0) reasons.push([1, `first in Claude's list for ${plain(c.root.title)}`])
   else if (c.index === 1) reasons.push([0.5, `next in ${plain(c.root.title)}`])
-  if (c.root.kind === 'stream' && c.root.turn > 0 && turn - c.root.turn <= 1) reasons.push([1, 'the stream you are working in'])
+  if (c.root.kind === 'stream' && c.root.turn > 0 && streamAge === 0) reasons.push([2, 'the stream you are working in'])
+  else if (c.root.kind === 'stream' && c.root.turn > 0 && streamAge === 1) reasons.push([0.5, 'the stream you are working in'])
   if (c.root.kind === 'todo') reasons.push([0.5, 'on the todo list'])
   let score = reasons.reduce((n, [w]) => n + w, 0)
+  // Smooth recency decay so steps from earlier topics slide down as the conversation moves on.
+  score -= Math.min(5, stepAge * 1.25) + (streamAge >= 1 ? Math.min(3, streamAge) : 0)
   if (SOFT.test(t)) score -= 2
   if (c.root.kind === 'tool') score -= 1
   if (c.root.kind === 'likely') score -= 1.5
@@ -1387,13 +1401,14 @@ const related = (roots: Root[], a: string, b: string) => {
   return (pa?.ancestors.some(s => s.id === b) ?? false) || (pb?.ancestors.some(s => s.id === a) ?? false)
 }
 
-/** The most important open steps: the model's ranking where it has one, the free score for the rest. */
+/** The most important open steps: current-turn work leads; a fresh model ranking refines it. */
 function ranking(roots: Root[], rank: Ranking | null, turn: number): { top: Ranked[]; unseen: number } {
   if (cfg.rank === 'off') return { top: [], unseen: 0 }
   const all = candidates(roots, turn)
-  const asked = words(rankCtx.prompts.join(' '))
+  const latestAsked = meaningful(rankCtx.prompts.at(-1) ?? '')
+  const earlierAsked = meaningful(rankCtx.prompts.slice(0, -1).join(' '))
   const scored = all
-    .map((c, order) => ({ c, order, ...localScore(c, turn, asked) }))
+    .map((c, order) => ({ c, order, ...localScore(c, turn, latestAsked, earlierAsked) }))
     .sort((a, b) => b.score - a.score || a.order - b.order)
   const top: Ranked[] = []
   const take = (root: Root, step: Step, why: string) => {
@@ -1401,9 +1416,19 @@ function ranking(roots: Root[], rank: Ranking | null, turn: number): { top: Rank
     top.push({ root, step, why })
   }
   if (rank !== null && cfg.rank === 'auto') {
-    for (const id of rank.ids) {
-      const c = all.find(x => x.step.id === id)
-      if (c) take(c.root, c.step, rank.why[id] ?? '')
+    if (rank.turn < turn) {
+      // A new turn has completed since Haiku ranked: promote unseen or current-turn steps first.
+      for (const x of scored) {
+        if (!rank.seen.includes(x.c.step.id) || x.c.step.addedTurn === turn || x.c.root.turn === turn || x.why === 'you asked for this') {
+          take(x.c.root, x.c.step, x.why)
+        }
+      }
+    }
+    if (turn - rank.turn <= 1) {
+      for (const id of rank.ids) {
+        const c = all.find(x => x.step.id === id)
+        if (c) take(c.root, c.step, rank.why[id] ?? '')
+      }
     }
   }
   for (const x of scored) take(x.c.root, x.c.step, x.why)
@@ -1421,19 +1446,21 @@ async function modelRank($: EngineInterface, isAsked: boolean) {
     return
   }
   const roots = await read($, rootsA)
-  const open = candidates(roots, await read($, turnA)).slice(0, 30)
+  const turnNow = await read($, turnA)
+  const open = candidates(roots, turnNow).slice(0, 30)
   if (open.length < 2) {
     if (isAsked) $.ui.toast('upnext: nothing to rank yet')
     return
   }
   await update($, rankingA, () => true)
   try {
-    const lines = open.map(
-      (c, i) =>
-        `${i + 1}. [${plain(c.root.title).replace(/`/g, '')}] ${plain(c.step.text)}${c.step.status === 'failed' ? ' (tried, not done)' : ''}${c.parent ? ` (part of: ${plain(c.parent.text)})` : ''}`,
-    )
+    const lines = open.map((c, i) => {
+      const age = Math.max(0, ageOf(c.step, c.root, turnNow))
+      const when = c.step.addedTurn === turnNow ? ' (new this turn)' : age > 0 ? ` (${age}t ago)` : ''
+      return `${i + 1}. [${plain(c.root.title).replace(/`/g, '')}] ${plain(c.step.text)}${when}${c.step.status === 'failed' ? ' (tried, not done)' : ''}${c.parent ? ` (part of: ${plain(c.parent.text)})` : ''}`
+    })
     const brief = [
-      "Rank a developer's open next steps by importance. Pick the 3 to 5 that matter most right now: first what is broken, failing or blocking; then work already in progress; then what the developer asked for. Leave out nice-to-haves.",
+      "Rank a developer's open next steps by what matters most right now in the conversation. Put the active line of work first (steps from the latest turn, matching the developer's latest request, or fixing an active failure in that work), ahead of leftover steps from earlier topics the conversation has moved past. Leave out nice-to-haves.",
       'For each, say why in under 12 words, concretely (what breaks or who waits), never just "important".',
       'Also list, as "forYou", the numbers of steps that are for the developer to do themselves (try, check, look at, decide, choose), not tasks to hand to the assistant as a prompt.',
       'Also list, as "drop", the numbers of any steps that are clearly not actionable next steps (pure commentary, status notes) or are obvious duplicates of another listed step. Be conservative: leave uncertain items out.',
@@ -1503,13 +1530,14 @@ async function modelRank($: EngineInterface, isAsked: boolean) {
   }
 }
 
-/** After steps arrive: re-rank when the model has not seen some of the open steps. */
+/** After steps arrive or the conversation moves on: re-rank when the current turn is unranked. */
 async function maybeRank($: EngineInterface) {
   if (cfg.rank !== 'auto') return
-  const open = candidates(await read($, rootsA), await read($, turnA))
+  const turn = await read($, turnA)
+  const open = candidates(await read($, rootsA), turn)
   if (open.length < 4) return
   const rank = await read($, rankA)
-  if (rank !== null && open.every(c => rank.seen.includes(c.step.id))) return
+  if (rank !== null && rank.turn === turn && open.every(c => rank.seen.includes(c.step.id))) return
   await modelRank($, false)
 }
 
@@ -1597,7 +1625,6 @@ async function afterClear($: EngineInterface) {
   rankAgain = false
   await update($, autopilotA, () => null)
   await update($, inflightA, () => [])
-  await update($, pendingA, () => [])
   await update($, loadingA, () => 0)
   await update($, confirmClearA, () => false)
   await changeRoots($, roots =>
@@ -2263,8 +2290,6 @@ export const register: Register = (on, options) => {
 
     const turn = await update($, turnA, n => (n ?? 0) + 1)
     if (ids.length > 0) await touch($, ids, turn)
-    const pending = (await read($, pendingA)).map(r => ({ ...r, turn }))
-    await update($, pendingA, () => [])
 
     const commands = await listCommands($)
     const parsed = knownOnly(parseReply(answer), commands)
@@ -2279,7 +2304,7 @@ export const register: Register = (on, options) => {
     // In model mode (or low-confidence heuristic matches in auto mode) the parser's reading waits as the fallback; otherwise it shows now.
     const holdParsed = (mode === 'model' || (mode === 'auto' && allWeak)) && wantGroups
     const runDoneCheck = ids.length === 0 && e.reason === 'answer' && cfg.rank === 'auto' && typedTurn?.turnId === e.turnId && !typedTurn.text.startsWith('/')
-    await addRoots($, [...(holdParsed ? [] : parsed.map(p => toRoot(p, turn))), ...pending], { rank: !runDoneCheck })
+    await addRoots($, holdParsed ? [] : parsed.map(p => toRoot(p, turn)), { rank: !runDoneCheck })
 
     // Steps the model is about to check stay until it answers: it may say ✗.
     for (const s of check) awaitingCheck.add(s.id)
@@ -2327,18 +2352,6 @@ export const register: Register = (on, options) => {
   }
 
   if (scanTools) {
-    on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-      const r = await next(e)
-      if (e.agentId !== undefined || typeof r.text !== 'string' || r.text.length === 0) return r
-      const found = parseToolText(r.text)
-      if (found.length > 0) {
-        const cmd = clean(String((e as { command?: unknown }).command ?? '').split('\n')[0] ?? '', 60)
-        const roots = found.map(p => toRoot({ ...p, title: p.title === 'Hints' ? 'Hints from Bash' : p.title }, 0, cmd || undefined))
-        await update($, pendingA, list => [...list, ...roots].slice(-8))
-      }
-      return r
-    }).catch(($, e, next) => next(e))
-
     on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
       const r = await next(e)
       if (e.agentId !== undefined || r.isError || r.deny !== undefined) return r

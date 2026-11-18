@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { clean, forYouOf, parseChecklist, parseReply, parseToolText, wrapRuns, runsOf } from '../hooks/parse'
+import { clean, forYouOf, parseChecklist, parseReply, wrapRuns, runsOf } from '../hooks/parse'
 
 const REPLY = `Done: the parser now handles nested lists.
 
@@ -38,11 +38,6 @@ test('lists outside a next-steps section are ignored', async () => {
 
 test('code blocks are skipped', async () => {
   expect(parseReply('```\n## Next steps\n- nope\n```')).toEqual([])
-})
-
-test('tool output gives command hints', async () => {
-  const roots = parseToolText('found 3 vulnerabilities\nRun `npm audit fix` to fix them.\n  (use "git add <file>..." to stage)')
-  expect(roots).toEqual([{ kind: 'tool', title: 'Hints', steps: [{ text: 'Run `npm audit fix`', children: [] }] }])
 })
 
 test('wrapping keeps to the width and ends in an ellipsis', async () => {

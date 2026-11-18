@@ -2,7 +2,7 @@
 // Add a case here whenever a real reply is read wrongly.
 import { expect, test } from 'claude-code/testing'
 
-import { commandOf, parseReply, parseToolText, type ParsedRoot } from '../hooks/parse'
+import { commandOf, parseReply, type ParsedRoot } from '../hooks/parse'
 
 const texts = (roots: ParsedRoot[]) => roots.map(r => [r.title, r.steps.map(s => s.text)])
 
@@ -74,11 +74,6 @@ for (const c of CASES) {
 test('a checked box comes through as done', async () => {
   const [root] = parseReply('### Remaining\n- [ ] a b\n- [x] c d')
   expect(root!.steps.map(s => s.isDone === true)).toEqual([false, true])
-})
-
-test('scaffolder output lists its commands', async () => {
-  const roots = parseToolText('Success! Created my-app.\n\nNext steps:\n  cd my-app\n  npm run dev\n')
-  expect(texts(roots)).toEqual([['Next steps', ['cd my-app', 'npm run dev']]])
 })
 
 test('slash-command steps are recognised', async () => {

@@ -21,7 +21,7 @@
     "clickAction": {
       "type": "string",
       "title": "What a click on a step does",
-      "description": "draft: put the step's prompt in the prompt box for you to edit and send. send: send it right away (⎘ then drafts). Steps from Bash output are always drafted.",
+      "description": "draft: put the step's prompt in the prompt box for you to edit and send. send: send it right away (⎘ then drafts).",
       "default": "draft",
       "options": [
         "draft",
@@ -155,8 +155,8 @@
     },
     "scanToolOutput": {
       "type": "boolean",
-      "title": "Read Bash output and task lists too",
-      "description": "Adds hints like \"run `npm audit fix`\" from Bash output, and open todo/task items.",
+      "title": "Read todo and task lists too",
+      "description": "Adds open todo/task items from TodoWrite and TaskCreate/TaskUpdate.",
       "default": true
     }
   }

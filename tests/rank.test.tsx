@@ -117,3 +117,24 @@ test('Haiku ranking can drop non-actionable noise without dropping your own step
   expect((await ui.findAll({ type: 'Button', text: /Keep my custom step/ })).filter(b => b.key?.startsWith('run:')).length).toBe(1)
   await ui.unmount()
 })
+
+test('moving on to a new topic puts the current turn first ahead of earlier blockers and requests', { options: { rank: 'local' } }, async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/r5', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'fix the auth login error', turnId: 't1' } as never)
+  await $.turn.complete({
+    ...TURN,
+    answer: '## Auth follow-ups\n- Fix the auth login error\n- Rotate the session secret',
+    turnId: 't1',
+  })
+  await $.turn.start({ text: 'now let us build the billing export', turnId: 't2' } as never)
+  await $.turn.complete({
+    ...TURN,
+    answer: '## Billing follow-ups\n- Add CSV export for invoices\n- Wire the billing webhook',
+    turnId: 't2',
+  })
+  const ui = await $.ui.mount(PANE)
+  const rows = await ranked(ui)
+  expect(rows.slice(0, 2)).toEqual(['Add CSV export for invoices', 'Wire the billing webhook'])
+  await ui.unmount()
+})

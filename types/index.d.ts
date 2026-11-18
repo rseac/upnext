@@ -89,7 +89,6 @@ declare module 'claude-code' {
   interface PluginState {
     'upnext': {
       roots: Shaped<Root[]>
-      pending: Shaped<Root[]>
       inflight: Shaped<Inflight[]>
       turn: number
       isClosedByPerson: boolean

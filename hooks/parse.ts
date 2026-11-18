@@ -16,8 +16,6 @@ export type ParsedRoot = {
 // Headings and lead-ins that introduce things to do.
 const CUE =
   /(?:^\W*(?:up )?next\W*$)|\b(next steps?|next up|what'?s next|what'?s left|what remains|still open|open items|before (?:merging|shipping|release)|where to go from here|going forward|suggest(?:ed|ions?)?|follow[- ]?ups?|to[- ]?dos?|action items?|recommend(?:ed|ations?)?|(?:some|a few|possible|your|other) options|you (?:could|can|might|may)(?: also)?|remaining|still to do|left to do|not (?:yet )?done|ideas|consider|further (?:work|improvements|steps)|possible (?:improvements|enhancements|extensions)|future work|want me to|would you like|should i|i can also|happy to|optional)\b/i
-// Extra cues that only make sense in tool output (scaffolders, installers).
-const TOOL_CUE = /\b(get(?:ting)? started|now run|to fix|then run|next,? run)\b/i
 // Softer cues that often mix commentary with suggestions; verified by the model in auto mode when no step is clearly an action.
 const WEAK_CUE = /\b(ideas?|consider|options|optional|notes?|further (?:work|improvements)|possible (?:improvements|enhancements|extensions)|future work)\b/i
 const STRONG_CUE = /\b(next steps?|next up|what'?s next|what'?s left|follow[- ]?ups?|to[- ]?dos?|action items?|before (?:merging|shipping|release))\b/i
@@ -172,26 +170,21 @@ function keepSteps(steps: ParsedStep[]): ParsedStep[] {
  * list items become subtrees; a bold sub-heading inside a section becomes a
  * group node.
  */
-export function parseSections(
-  md: string,
-  opts: { kind?: 'reply' | 'tool'; loose?: boolean } = {},
-): ParsedRoot[] {
-  const kind = opts.kind ?? 'reply'
+export function parseSections(md: string): ParsedRoot[] {
   const roots: ParsedRoot[] = []
   let section: Section | undefined
   let inFence = false
 
   const close = () => {
     if (section) {
-      const steps = prune(kind === 'reply' ? keepSteps(section.steps) : section.steps)
+      const steps = prune(keepSteps(section.steps))
       if (steps.length > 0) {
         const title = tidy(section.title)
         const isWeak =
-          kind === 'reply' &&
           WEAK_CUE.test(title) &&
           !STRONG_CUE.test(title) &&
           !steps.some(s => isAction(s.text))
-        roots.push({ kind, title, steps, ...(isWeak ? { isWeak } : {}) })
+        roots.push({ kind: 'reply', title, steps, ...(isWeak ? { isWeak } : {}) })
       }
     }
     section = undefined
@@ -199,7 +192,7 @@ export function parseSections(
   // A cue in brackets ("Option A (my recommendation)") qualifies a heading; it is not the heading.
   const isCue = (t: string) => {
     const bare = t.replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')
-    return CUE.test(bare) || (opts.loose === true && TOOL_CUE.test(bare))
+    return CUE.test(bare)
   }
 
   for (const raw of md.split(/\r?\n/)) {
@@ -267,20 +260,9 @@ export function parseSections(
     }
     const indent = indentOf(line)
     const last = section.stack[section.stack.length - 1]
-    if (opts.loose === true && indent >= 1 && !last) {
-      // Tool output often lists commands indented, with no bullets.
-      const node: ParsedStep = { text: tidy(line), children: [] }
-      ;(section.group ? section.group.children : section.steps).push(node)
-      section.sawItem = true
-      continue
-    }
     if (last && indent > last.indent) {
       // A wrapped continuation of the previous item.
       if (last.node.text.length < 240) last.node.text = tidy(`${last.node.text} ${line}`)
-      continue
-    }
-    if (opts.loose === true && indent >= 1) {
-      section.steps.push({ text: tidy(line), children: [] })
       continue
     }
     // Plain paragraph: before any item it is the section's intro; after, the end.
@@ -346,33 +328,6 @@ export function parseOffers(md: string): ParsedRoot[] {
     }
   }
   return steps.length > 0 ? [{ kind: 'offer', title: 'Claude offered', steps }] : []
-}
-
-const RUN_HINT = /\b(?:run|try(?: running)?|execute|use|type)\s*:?\s+[`'"]([^`'"\n]{2,120})[`'"]/gi
-
-/** Command hints and next-steps sections in a tool's text output. */
-export function parseToolText(text: string): ParsedRoot[] {
-  const clipped = text.length > 20000 ? text.slice(-20000) : text
-  const roots = parseSections(clipped, { kind: 'tool', loose: true })
-  const seen = new Set(roots.flatMap(r => r.steps.map(s => keyOf(s.text))))
-  const hints: ParsedStep[] = []
-  for (const line of clipped.split(/\r?\n/)) {
-    // git status prints "(use "git add <file>..." ...)" on every run: noise.
-    if (/^\s*\(use\b/i.test(line)) continue
-    for (const m of line.matchAll(RUN_HINT)) {
-      const cmd = clean(m[1]!, 120)
-      if (cmd === '' || /[<>`]/.test(cmd)) continue
-      const step = `Run \`${cmd}\``
-      const k = keyOf(step)
-      if (seen.has(k)) continue
-      seen.add(k)
-      hints.push({ text: step, children: [] })
-      if (hints.length >= 5) break
-    }
-    if (hints.length >= 5) break
-  }
-  if (hints.length > 0) roots.push({ kind: 'tool', title: 'Hints', steps: hints })
-  return roots
 }
 
 /** Every step a reply suggests: its sections first, then its closing offers. */

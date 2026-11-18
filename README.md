@@ -133,7 +133,6 @@ At the end of each turn the mod reads:
 
 - **The reply**: lists under headings or labels like "Next steps", "Suggested follow-ups" or "You could also:". Nested lists become subtrees, and sub-headings become groups.
 - **Offers** in the closing lines, like "Want me to add tests or update the README?". Each option becomes its own step.
-- **Bash output**: hints like ``Run `npm audit fix` ``, and "Next steps" blocks that scaffolders print.
 - **Todo and task lists**: open items from TodoWrite and TaskCreate/TaskUpdate, updated as they change.
 - **A guess, when there is nothing else**: if a reply lists no steps, a fork of the session reads the conversation. It either finds the steps the reply implies, or adds a dim **Likely next** group with up to three prompts you'd probably send next. This costs about one short reply. Replies that list their steps cost nothing.
 
@@ -298,7 +297,7 @@ Step text comes from replies and tool output, which can quote files and web page
 | `statusLine` | `true` | Shows "✦ 3 next steps" in the status line. |
 | `keepAcrossSessions` | `true` | Saves each session's open steps, and brings them back when you resume that session. |
 | `autoOpen` | `false` | Opens the pane beside the transcript when new steps arrive. Off by default: the lines above the prompt carry the top steps, and `/upnext` opens the pane. |
-| `scanToolOutput` | `true` | Reads Bash output and todo/task lists too. |
+| `scanToolOutput` | `true` | Reads todo and task lists too. |
 | `autoTick` | `true` | Ticks steps off after a commit that covers them, or a test run that passes. |
 | `rank` | `auto` | `auto`: free scoring every turn, plus a Haiku re-rank when new steps arrive. `local`: free scoring only. `off`: no ranked section. |
 | `clearDoneAfter` | `0` | Turns a done step stays before it leaves: `0` clears it when the turn that did it ends; a negative number keeps done steps until you clear them. |
