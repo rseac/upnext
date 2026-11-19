@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { clean, forYouOf, parseChecklist, parseReply, wrapRuns, runsOf } from '../hooks/parse'
+import { clean, forYouOf, parseChecklist, parseOffers, parseReply, wrapRuns, runsOf } from '../hooks/parse'
 
 const REPLY = `Done: the parser now handles nested lists.
 
@@ -88,4 +88,28 @@ test('parseChecklist reads open items by stream and skips completed ones', async
   expect(roots[0]!.steps.map(s => s.text)).toEqual(['Audit token store'])
   expect(roots[0]!.steps[0]!.children.map(s => s.text)).toEqual(['Check refresh TTL'])
   expect(roots[1]!.steps.map(s => s.text)).toEqual(['Update README'])
+})
+
+test('parseOffers skips vague conversational sign-offs while keeping concrete offers', async () => {
+  expect(parseOffers('Let me know if you would like me to make any changes or go into more detail.')).toEqual([])
+  expect(parseOffers('I can elaborate on that or walk you through the changes.')).toEqual([])
+  expect(parseOffers('Want me to tweak anything else?')).toEqual([])
+  const kept = parseOffers('I can run the test suite or walk you through it.')
+  expect(kept.length).toBe(1)
+  expect(kept[0]!.steps.map(s => s.text)).toEqual(['Run the test suite'])
+})
+
+test('leading [Stream] and [check]/[decide] tags split sections by stream and set forYou', async () => {
+  const roots = parseReply(
+    '## Next steps\n- [Auth] Rotate the signing key\n- [Auth] [check] Try logging in with an expired token\n- [Docs] [decide] Pick whether to document the legacy flag',
+  )
+  expect(roots.map(r => [r.title, r.stream])).toEqual([
+    ['Auth', 'Auth'],
+    ['Docs', 'Docs'],
+  ])
+  expect(roots[0]!.steps.map(s => [s.text, s.forYou])).toEqual([
+    ['Rotate the signing key', undefined],
+    ['Try logging in with an expired token', 'check'],
+  ])
+  expect(roots[1]!.steps.map(s => [s.text, s.forYou])).toEqual([['Pick whether to document the legacy flag', 'decide']])
 })

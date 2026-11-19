@@ -2,7 +2,13 @@
 // inline markdown into styled runs for drawing. No `$` here, so tests can
 // call these directly.
 
-export type ParsedStep = { text: string; children: ParsedStep[]; isDone?: boolean }
+export type ParsedStep = {
+  text: string
+  children: ParsedStep[]
+  isDone?: boolean
+  stream?: string
+  forYou?: 'check' | 'decide'
+}
 export type ParsedRoot = {
   kind: 'reply' | 'offer' | 'tool' | 'likely'
   title: string
@@ -110,6 +116,37 @@ type Section = {
   tableRows: number
 }
 
+const TAG_PREFIX = /^(?:\*\*|__)?\[([^\][\n]{1,32})\](?:\*\*|__)?\s*:?\s+(.+)$/
+
+/** Extracts leading `[Stream]` and `[check]` / `[decide]` tags from a step bullet. */
+export function parseStepTags(raw: string): { text: string; stream?: string; forYou?: 'check' | 'decide' } {
+  let text = raw.trim()
+  let stream: string | undefined
+  let forYou: 'check' | 'decide' | undefined
+  for (let i = 0; i < 2; i++) {
+    // Do not strip markdown links like `[text](url)`.
+    if (/^\[[^\]]+\]\(/.test(text)) break
+    const m = TAG_PREFIX.exec(text)
+    if (!m) break
+    const tag = clean(m[1]!, 32)
+    const lower = tag.toLowerCase()
+    if (lower === 'x' || lower === '') break
+    if (lower === 'check' || lower === 'try' || lower === 'verify') {
+      forYou = 'check'
+      text = m[2]!.trim()
+    } else if (lower === 'decide' || lower === 'ask' || lower === 'choice' || lower === '?') {
+      forYou = 'decide'
+      text = m[2]!.trim()
+    } else if (stream === undefined) {
+      stream = tag
+      text = m[2]!.trim()
+    } else {
+      break
+    }
+  }
+  return { text, ...(stream ? { stream } : {}), ...(forYou ? { forYou } : {}) }
+}
+
 const prune = (steps: ParsedStep[]): ParsedStep[] =>
   steps
     .map(s => ({ ...s, children: prune(s.children) }))
@@ -183,8 +220,21 @@ export function parseSections(md: string): ParsedRoot[] {
         const isWeak =
           WEAK_CUE.test(title) &&
           !STRONG_CUE.test(title) &&
-          !steps.some(s => isAction(s.text))
-        roots.push({ kind: 'reply', title, steps, ...(isWeak ? { isWeak } : {}) })
+          !steps.some(s => isAction(s.text) || s.stream !== undefined || s.forYou !== undefined)
+        if (steps.some(s => s.stream !== undefined)) {
+          const byStream = new Map<string, { title: string; stream?: string; steps: ParsedStep[] }>()
+          for (const step of steps) {
+            const key = (step.stream ?? title).toLowerCase()
+            const cur = byStream.get(key)
+            if (cur) cur.steps.push(step)
+            else byStream.set(key, { title: step.stream ?? title, ...(step.stream ? { stream: step.stream } : {}), steps: [step] })
+          }
+          for (const g of byStream.values()) {
+            roots.push({ kind: 'reply', title: g.title, steps: g.steps, ...(g.stream ? { stream: g.stream } : {}), ...(isWeak ? { isWeak } : {}) })
+          }
+        } else {
+          roots.push({ kind: 'reply', title, steps, ...(isWeak ? { isWeak } : {}) })
+        }
       }
     }
     section = undefined
@@ -234,7 +284,13 @@ export function parseSections(md: string): ParsedRoot[] {
     const m = LIST.exec(line)
     if (m) {
       const indent = indentOf(m[1]!)
-      const node: ParsedStep = { text: tidy(m[3]!), children: [] }
+      const tagged = parseStepTags(tidy(m[3]!))
+      const node: ParsedStep = {
+        text: tagged.text,
+        children: [],
+        ...(tagged.stream ? { stream: tagged.stream } : {}),
+        ...(tagged.forYou ? { forYou: tagged.forYou } : {}),
+      }
       if (m[2] === 'x' || m[2] === 'X') node.isDone = true
       const stack = section.stack
       while (stack.length > 0 && stack[stack.length - 1]!.indent >= indent) stack.pop()
@@ -275,7 +331,9 @@ export function parseSections(md: string): ParsedRoot[] {
 const OFFER =
   /^(?:(?:if you(?:'d| would) like|if you want|if helpful|optionally|alternatively|also|next)[, ]+)?(?:(?:i can|i could)(?: also)?(?!\s+(?:not|never|only|barely|see|tell)\b)|want me to|would you like me to|do you want me to|should i|shall i|i(?:'d| would) be happy to|happy to|let me know if you(?:'d| would) like me to|let me know if i should)\s+(.+?)\s*[?.!]*$/i
 const VERB =
-  /^(?:add|run|write|create|update|fix|make|set|open|start|try|look|check|commit|push|refactor|remove|delete|build|deploy|move|rename|install|test|wire|draft|turn|go|show|change|split|merge|keep|use|switch|publish|share|review|explain|dig|investigate|clean|port|convert|extend|implement|also|then)\b/i
+  /^(?:add|run|write|create|update|fix|make|set|open|start|try|look|check|commit|push|refactor|remove|delete|build|deploy|move|rename|install|test|wire|draft|turn|go|show|change|split|merge|keep|use|switch|publish|share|review|explain|dig|investigate|clean|port|convert|extend|implement|walk|elaborate|also|then)\b/i
+const VAGUE_OFFER =
+  /^(?:help|answer|clarify|make any (?:changes|adjustments|tweaks)|(?:change|tweak|adjust) anything|go into more detail|elaborate(?: on)?|walk (?:you )?through (?:it|this|the changes))\b/i
 
 /**
  * Finds offers in the closing paragraphs ("Want me to add tests or update the
@@ -312,7 +370,7 @@ export function parseOffers(md: string): ParsedRoot[] {
       let phrase = m[1]!
         .replace(/\s+(?:too|as well|for you|next|now)$/i, '')
         .replace(/^(?:go ahead and|also|then)\s+/i, '')
-      if (/^(?:help|answer|clarify)\b/i.test(phrase)) continue
+      if (VAGUE_OFFER.test(phrase)) continue
       // "start on 1–3", "do all of these": only makes sense next to the list it points at.
       if (/\b(?:#?\d+(?:\s*[–-]\s*\d+)?|these|those|them|any of (?:these|them)|all of (?:these|them)|either)$/i.test(phrase)) continue
       const parts = phrase
@@ -322,7 +380,7 @@ export function parseOffers(md: string): ParsedRoot[] {
       const alternatives = parts.length > 1 && parts.slice(1).every(p => VERB.test(p)) ? parts : [phrase]
       for (const alt of alternatives) {
         phrase = tidy(alt.replace(/^(?:i\s+)?(?:also|then)\s+/i, ''))
-        if (phrase.split(' ').length < 2) continue
+        if (VAGUE_OFFER.test(phrase) || phrase.split(' ').length < 2) continue
         steps.push({ text: phrase.charAt(0).toUpperCase() + phrase.slice(1), children: [] })
       }
     }

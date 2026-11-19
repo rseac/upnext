@@ -71,14 +71,19 @@ Do these in order. Report each step's result in one line. Stop and ask the perso
 2. **Add the marketplace:** `claude plugin marketplace add rseac/upnext`
 3. **Install for this user:** `claude plugin install upnext@upnext -s user`
    Then run `claude plugin list` and confirm `upnext` shows as enabled.
-4. **Settings (only if the person asked for any).** Defaults suit most people. To change one, reinstall with `--config`, for example `claude plugin install upnext@upnext -s user --config rank=local`. The options are in the [Options](#options) table.
-5. **herdr (only if the person uses it).** Skip this step unless `command -v herdr` succeeds.
+4. **Formatting rule in `~/.claude/CLAUDE.md`:** Open `~/.claude/CLAUDE.md` (create it if missing). If it does not already mention `upnext`, append:
+   ```markdown
+   ## upnext
+   When a reply has concrete follow-ups, end with a `## Next steps` section ordered most important first. Prefix each bullet with its short topic in brackets (e.g. `- [Auth] Rotate the signing key`), and add `[check]` (for the user to try/verify) or `[decide]` (for a choice the user must make) when a step is for the user rather than a prompt for you. Omit `## Next steps` when no follow-up is needed.
+   ```
+5. **Settings (only if the person asked for any).** Defaults suit most people. To change one, reinstall with `--config`, for example `claude plugin install upnext@upnext -s user --config rank=local`. The options are in the [Options](#options) table.
+6. **herdr (only if the person uses it).** Skip this step unless `command -v herdr` succeeds.
    1. Find the installed copy: `find ~/.claude/plugins -name herdr-plugin.toml -path '*upnext*' | head -1`. The folder holding that file is the herdr plugin.
    2. Link it: `herdr plugin link <that folder>`.
    3. Open `~/.config/herdr/config.toml` (create it if missing). If it does **not** already bind `prefix+u` or define `[ui.sidebar.agents]`, append the block from [One-time setup](#one-time-setup). If either already exists, show the person the block and ask before changing anything.
    4. Run `herdr config check`, and only if it prints `Config: ok`, run `herdr server reload-config`.
    5. Check `python3 --version` works; the popup needs it.
-6. **Finish.** Tell the person to restart Claude Code (plugins load at start), and what to expect: after a reply that suggests next steps, the top three appear above the prompt box; `/upnext` opens the full list; in herdr, `prefix+u` (Ctrl+B, then u) opens it as a popup.
+7. **Finish.** Tell the person to restart Claude Code (plugins load at start), and what to expect: after a reply that suggests next steps, the top three appear above the prompt box; `/upnext` opens the full list; in herdr, `prefix+u` (Ctrl+B, then u) opens it as a popup.
 
 Undo: `claude plugin uninstall upnext@upnext`, and in herdr `herdr plugin unlink upnext` plus removing the block from `~/.config/herdr/config.toml`.
 
@@ -277,7 +282,9 @@ When a step's turn ends, it gets ✓, or ✗ if the reply says it couldn't finis
 | `/upnext clear` | Empties the pane and the saved copy. |
 | `/upnext export [file]` | Writes every step as a Markdown checklist (default `NEXT_STEPS.md`). |
 | `/upnext carry [file]` | Imports open steps from an exported checklist (default `NEXT_STEPS.md`) into this session, marked "earlier". |
-| `/upnext issues` | Drafts a prompt asking Claude to turn the open steps into GitHub issues, showing them to you first. Nothing is created until you send it and approve. |
+| `/upnext wrap [file]` | Saves open steps plus a handoff summary (goal, completed steps, latest context, git checkpoint) to `NEXT_STEPS.md` so you can `/compact` or start a new session with `/upnext carry`. |
+| `/upnext pr` | Drafts a prompt asking Claude to write a PR title and description from the steps completed in this session and any remaining follow-ups. |
+| `/upnext issues [import]` | Without arguments, drafts a prompt to turn open steps into GitHub issues. With `import`, pulls open GitHub issues (`gh issue list`) into an **Issues** stream. |
 
 ### Safety
 

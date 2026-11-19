@@ -81,3 +81,23 @@ test('a commit does not tick a step on stop-word overlap alone', async ($, on) =
   expect(await statusOf(ui, /Add the tests/)).toBe('○')
   await ui.unmount()
 })
+
+test('generic commit and push steps tick on git commit and git push', async ($, on) => {
+  const { toasts } = engine(on, 'wip', 'Everything up-to-date')
+  await $.session.start({ cwd: '/t5', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: '## Next steps\n- Commit the changes\n- Push to origin\n- Update the changelog', turnId: 't1' })
+  await $.tool.call({ tool: 'Bash', command: 'git commit -m "wip"' } as never)
+  let ui = await $.ui.mount(PANE)
+  expect(await statusOf(ui, /Commit the changes/)).toBe('✓')
+  expect(await statusOf(ui, /Push to origin/)).toBe('○')
+  expect(await statusOf(ui, /Update the changelog/)).toBe('○')
+  expect(toasts.at(-1)).toContain('(committed)')
+  await ui.unmount()
+
+  await $.tool.call({ tool: 'Bash', command: 'git push' } as never)
+  ui = await $.ui.mount(PANE)
+  expect(await statusOf(ui, /Push to origin/)).toBe('✓')
+  expect(await statusOf(ui, /Update the changelog/)).toBe('○')
+  expect(toasts.at(-1)).toContain('(pushed)')
+  await ui.unmount()
+})

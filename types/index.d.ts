@@ -83,6 +83,8 @@ export type Autopilot = {
   /** The step whose turn is running now. */
   current?: string
   total: number
+  /** Short git commit SHA recorded when the run started, as a restore point. */
+  startSha?: string
 }
 
 declare module 'claude-code' {

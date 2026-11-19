@@ -232,3 +232,12 @@ test('archived streams stay when more than 24 groups arrive', async ($, on) => {
   expect((await ui.findAll({ type: 'Button', text: /Archived · 1/ })).length).toBe(1)
   await ui.unmount()
 })
+
+test('when focused on one stream, new steps landing in another stream trigger a drift toast', async ($, on) => {
+  const { toasts } = engine(on)
+  await $.session.start({ cwd: '/s11', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: '## Auth follow-ups\n- Rotate the signing key', turnId: 't1' })
+  await $.command.run(RUN('auth'))
+  await $.turn.complete({ ...TURN, answer: '## Billing follow-ups\n- Add invoice export', turnId: 't2' })
+  expect(toasts.some(t => t.includes('new steps landed in “Billing”'))).toBe(true)
+})

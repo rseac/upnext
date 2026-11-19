@@ -312,3 +312,114 @@ test("a new session starts empty, even in the same folder as another session's s
   expect(await ui.find({ type: 'Text', text: /Nothing queued up/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('/upnext wrap writes handoff context and open steps; ▶▶ records a git checkpoint and fails if Bash fails', async ($, on) => {
+  const { written, toasts } = engine(on)
+  on('process.run', () => ({
+    value: { exitCode: 0, stdout: 'a1b2c3d\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '1 fail' }, text: '1 fail', isError: true }) as never)
+  await $.session.start({ cwd: '/proj-wrap', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'Ship the auth overhaul', turnId: 't1' })
+  await $.turn.complete({ ...TURN, reason: 'answer', answer: 'Wired the token store.\n\n## Next steps\n- Add tests\n- Update the docs', turnId: 't1' })
+
+  const wrapped = await $.command.run({
+    command: 'upnext',
+    args: 'wrap handoff.md',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 120 },
+  })
+  expect(wrapped.text).toContain('Wrapped up 2 open steps to handoff.md')
+  const [, text] = Object.entries(written)[0]!
+  expect(text).toContain('> Goal: Ship the auth overhaul')
+  expect(text).toContain('> Checkpoint: a1b2c3d')
+  expect(text).toContain('- [ ] Add tests')
+
+  const ui = await $.ui.mount(PANE)
+  const seq = await ui.find({ type: 'Button', text: /▶▶/ })
+  await ui.press({ key: seq!.key! })
+  expect(await ui.find({ type: 'Text', text: /from a1b2c3d/ })).toBeDefined()
+
+  await $.turn.start({ text: 'Add tests', turnId: 't2' })
+  await $.tool.call({ tool: 'Bash', command: 'npm test' } as never)
+  await $.turn.complete({ ...TURN, reason: 'answer', answer: 'Ran the test suite.', turnId: 't2' })
+  expect((await stepRow(ui, /Add tests/))?.text).toContain('✗')
+  expect(toasts.at(-1)).toContain('checkpoint: a1b2c3d')
+  await ui.unmount()
+})
+
+test('/upnext issues import pulls open GitHub issues and reminds you to close them when done', async ($, on) => {
+  const { toasts } = engine(on)
+  on('process.run', () => ({
+    value: {
+      exitCode: 0,
+      stdout: JSON.stringify([{ number: 42, title: 'Fix token refresh race' }]),
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  await $.session.start({ cwd: '/proj-issues', surface: 'terminal', isInteractive: true })
+  const imported = await $.command.run({
+    command: 'upnext',
+    args: 'issues import',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 120 },
+  })
+  expect(imported.text).toBe('Imported 1 open GitHub issue into “Issues”.')
+  const ui = await $.ui.mount(PANE)
+  const row = await stepRow(ui, /#42 Fix token refresh race/)
+  expect(row).toBeDefined()
+  const id = row!.key!.replace('run:', '')
+  await ui.press({ key: `alt:${id}` })
+  await $.turn.start({ text: '#42 Fix token refresh race', turnId: 't2' })
+  await $.turn.complete({ ...TURN, reason: 'answer', answer: 'Fixed the token refresh race.', turnId: 't2' })
+  expect(toasts.some(t => t.includes('gh issue close 42'))).toBe(true)
+  await ui.unmount()
+})
+
+test('session start nudges when NEXT_STEPS.md exists; completed steps stay in doneLog for /upnext wrap and /upnext pr', async ($, on) => {
+  const { toasts, written, drafted } = engine(on)
+  on('fs.stat', () => ({ value: { kind: 'file' as const, size: 42, mtimeMs: 1, isLink: false } }))
+  await $.session.start({ cwd: '/proj-pr', surface: 'terminal', isInteractive: true })
+  expect(toasts.some(t => t.includes('found NEXT_STEPS.md'))).toBe(true)
+
+  await $.turn.complete({ ...TURN, reason: 'answer', answer: '## Next steps\n- [Auth] Rotate the signing key\n- [Auth] Audit the token store', turnId: 't1' })
+  await $.turn.start({ text: 'Rotate the signing key', turnId: 't2' })
+  await $.turn.complete({ ...TURN, reason: 'answer', answer: 'Rotated the signing key.', turnId: 't2' })
+
+  await $.command.run({
+    command: 'upnext',
+    args: 'wrap handoff.md',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 120 },
+  })
+  const [, text] = Object.entries(written)[0]!
+  expect(text).toContain('> Completed: Rotate the signing key')
+
+  await $.command.run({
+    command: 'upnext',
+    args: 'pr',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 120 },
+  })
+  expect(drafted.at(-1)).toContain('- [x] [Auth] Rotate the signing key')
+  expect(drafted.at(-1)).toContain('- [ ] [Auth] Audit the token store')
+})
+
+test('clicking or sending a done step reopens it and tracks its new run', { options: { clearDoneAfter: -1 } }, async ($, on) => {
+  const { sent } = engine(on)
+  await $.session.start({ cwd: '/proj-reopen', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, reason: 'answer', answer: '## Next steps\n- [x] Run the linter\n- Add tests', turnId: 't1' })
+  const ui = await $.ui.mount(PANE)
+  expect((await stepRow(ui, /Run the linter/))?.text).toContain('✓')
+
+  const id = (await stepRow(ui, /Run the linter/))!.key!.replace('run:', '')
+  await ui.press({ key: `alt:${id}` })
+  expect(sent).toEqual(['Run the linter'])
+  await $.turn.start({ text: 'Run the linter', turnId: 't2' })
+  expect((await stepRow(ui, /Run the linter/))?.text).toContain('◐')
+  await $.turn.complete({ ...TURN, reason: 'answer', answer: 'I could not run the linter.', turnId: 't2' })
+  expect((await stepRow(ui, /Run the linter/))?.text).toContain('✗')
+  await ui.unmount()
+})

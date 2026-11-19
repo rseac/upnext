@@ -138,3 +138,43 @@ test('moving on to a new topic puts the current turn first ahead of earlier bloc
   expect(rows.slice(0, 2)).toEqual(['Add CSV export for invoices', 'Wire the billing webhook'])
   await ui.unmount()
 })
+
+test('a turn that adds no steps boosts the existing stream and steps matching the active topic', { options: { rank: 'local' } }, async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/r6', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({
+    ...TURN,
+    answer: '## Billing follow-ups\n- Wire the billing webhook\n- Export monthly invoices',
+    turnId: 't1',
+  })
+  await $.turn.complete({
+    ...TURN,
+    answer: '## Auth follow-ups\n- Fix the auth login error\n- Rotate the session secret',
+    turnId: 't2',
+  })
+  // Turn 3 discusses billing without adding any new steps and without running a step directly.
+  await $.turn.start({ text: 'what retry policy should we use for billing?', turnId: 't3' } as never)
+  await $.turn.complete({
+    ...TURN,
+    answer: 'For the billing webhook and monthly invoices, use exponential backoff with idempotency keys.',
+    turnId: 't3',
+  })
+  const ui = await $.ui.mount(PANE)
+  const rows = await ranked(ui)
+  expect(rows[0]).toBe('Wire the billing webhook')
+  await ui.unmount()
+})
+
+test('top-ranked steps with open sub-steps show +N in Pane', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/r7', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({
+    ...TURN,
+    answer: '## Next steps\n- Fix the crash on startup\n  - Reproduce on Linux\n  - Add a regression test\n- Tidy the README',
+    turnId: 't1',
+  })
+  const ui = await $.ui.mount(PANE)
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
+  expect(texts.some(t => t === ' +2')).toBe(true)
+  await ui.unmount()
+})

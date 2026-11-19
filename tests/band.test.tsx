@@ -81,3 +81,17 @@ test('the lines fit the rows Claude Code gives: two rows, two lines; one row, al
   expect((await one.findAll({ type: 'Text', text: /✦ next/ })).length).toBe(1)
   await one.unmount()
 })
+
+test('top-ranked steps with open sub-steps show +N next to their text in AbovePrompt', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/b4', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({
+    ...TURN,
+    answer: '## Next steps\n- Fix the crash on startup\n  - Reproduce on Linux\n  - Add a regression test\n- Tidy the README',
+    turnId: 't1',
+  })
+  const band = await $.ui.mount(BAND as never)
+  const texts = (await band.findAll({ type: 'Text' })).map(t => t.text ?? '')
+  expect(texts.some(t => t === ' +2')).toBe(true)
+  await band.unmount()
+})
