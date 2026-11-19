@@ -2,28 +2,40 @@
   <img src=".claude-plugin/icon.png" alt="upnext" width="180">
 </p>
 
-<h1 align="center">upnext</h1>
+<h1 align="center">upnext — Next Steps, Task Queue & Session Handoff for Claude Code</h1>
 
-<p align="center">A Claude Code mod that keeps track of what to do next, so suggestions stop getting lost.</p>
+<p align="center">
+  <strong>A Claude Code plugin that captures, ranks, and runs the next steps Claude suggests—right above your prompt box, in a side pane, or across background agents.</strong>
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#how-it-looks">Screenshots</a> ·
+  <a href="#most-important-first">Active-Topic Ranking</a> ·
+  <a href="#session-handoff-pr-summaries--github-issues">Handoff & GitHub Issues</a> ·
+  <a href="#inside-herdr">herdr Popup</a> ·
+  <a href="#options">Options</a>
+</p>
 
 ## The problem
 
-Most Claude replies end with suggestions: a "Next steps" list, "Want me to also…", a hint in some command's output. In a long session they go wrong in predictable ways:
+Most Claude Code replies end with follow-up suggestions: a "Next steps" list, "Want me to also…", or open tasks across several workstreams. In a real coding session they go wrong in predictable ways:
 
-- **They scroll away.** Each new reply buries the last one's suggestions, and the good ideas are forgotten.
-- **You lose track of what's open.** With several lines of work going at once, nothing tells you what is still left, or what matters most.
+- **They scroll away.** Each new reply buries the last one's suggestions, and good ideas are forgotten.
+- **You lose track of what's open.** With several lines of work going at once, nothing tells you what is still left, or what matters most for the topic you're actively working on.
 - **Acting on one means retyping it.** You copy or paraphrase a suggestion back into the prompt box.
 - **Not every suggestion is a prompt.** "Try the new pane" or "pick a license" are for you to do, mixed in with work for Claude.
-- **Lists go stale.** Finished items linger and old ideas crowd out what matters now.
+- **Lists go stale—or disappear between sessions.** Finished items linger, abandoned ideas stay stuck, and starting a new chat loses where you left off.
 
 ## What upnext does
 
-- **Collects** suggestions from replies and tool output as they appear, grouped by line of work.
-- **Ranks** them and shows the top three, with the reason for each, right above the prompt box. One key acts on a step.
-- **Clears** steps as they get done: by a prompt you type, a commit, a passing test run, or a click. Untouched ones fade and then fold away.
-- **Separates** steps for you (try, check, decide) from prompts for Claude, so yours are never sent by accident.
+- **Collects** next steps automatically from Claude's replies and `TodoWrite` / `TaskCreate` lists—instructing Claude to tag steps by `[Topic]` and `[check]` / `[decide]` so extraction takes `<1ms` with zero extra LLM calls.
+- **Follows your active focus** and shows the top three steps, with the reason for each (and `+N` when a step carries sub-steps), right above the prompt box. Press `1`, `2`, or `3` to act on one immediately.
+- **Verifies and clears** steps as they get done: by a prompt you type, a `git commit`, a `git push`, a passing test run, or a click—while marking steps `✗` (`failed`) if a Bash or test command fails during their turn, and dropping superseded steps when you change direction.
+- **Separates** steps for you (`☐` try/check, `?` decide) from prompts for Claude (`○`), so yours are never sent by accident.
+- **Hands off cleanly across sessions, PRs, and GitHub Issues** with `/upnext wrap`, `/upnext carry`, `/upnext pr`, and two-way `/upnext issues [import]`.
 
-Each session keeps its own list.
+Each session keeps its own list, and new sessions automatically detect a `NEXT_STEPS.md` handoff in your repo.
 
 ## How it looks
 
@@ -102,8 +114,8 @@ The pane answers one question first: *what matters most right now?* Up to five s
 
 How they're picked, cheapest first:
 
-1. **Free, every turn:** a score from what the mod already knows: a step that didn't get done (✗), failing tests, what you asked for in your own prompts, words like *broken*, *security* or *before merging*, being first in Claude's list, new this turn. Words like *optional* or *idea* rank lower.
-2. **Haiku, when new steps arrive** and four or more are open: it gets a short brief (the open steps, your last few prompts, the start of the last reply, failing test lines), a few thousand tokens to a small model, never a copy of the conversation. Turns that add no steps cost nothing.
+1. **Free, every turn (active-conversation aware):** a score that follows what you and Claude are working on *right now*: steps from the latest turn and active stream, steps matching your latest prompt or Claude's latest reply (`current topic`), steps that failed last time (`✗`), active test failures, and urgent blockers (`security`, `crash`, `before merging`). Steps from earlier topics smoothly decay each turn as the conversation moves on, and top steps with sub-steps show `+N`.
+2. **Haiku, when new steps arrive or focus shifts** and four or more are open: it gets a short brief (the open steps with their turn age, your recent prompts, the start of the last reply, failing test lines)—a few thousand tokens to a small model, never a copy of the conversation. Haiku ranks the top steps, corrects `forYou` labels, and prunes non-actionable noise or duplicates.
 3. **On demand:** `p` re-ranks at any time.
 
 Everything else stays under **everything else**, folded once more than eight steps are open (`e` unfolds). The three lines above the prompt, ghost text and herdr's sidebar line all use the ranking. Set `rank` to `local` for the free score only, or `off` for the plain list.
@@ -134,12 +146,13 @@ Newest steps are on top, in each stream and across streams. Steps from one reply
 
 ## Where steps come from
 
-At the end of each turn the mod reads:
+While enabled, `upnext` adds a cached prompt instruction telling Claude to format follow-ups under `## Next steps` ordered most important first, with leading `[Topic]` and `[check]` / `[decide]` tags (e.g. `- [Auth] Rotate the signing key`, `- [Auth] [check] Try logging in with an expired token`). At the end of each turn the mod reads:
 
-- **The reply**: lists under headings or labels like "Next steps", "Suggested follow-ups" or "You could also:". Nested lists become subtrees, and sub-headings become groups.
-- **Offers** in the closing lines, like "Want me to add tests or update the README?". Each option becomes its own step.
-- **Todo and task lists**: open items from TodoWrite and TaskCreate/TaskUpdate, updated as they change.
-- **A guess, when there is nothing else**: if a reply lists no steps, a fork of the session reads the conversation. It either finds the steps the reply implies, or adds a dim **Likely next** group with up to three prompts you'd probably send next. This costs about one short reply. Replies that list their steps cost nothing.
+- **The reply**: lists under headings or labels like "Next steps", "Suggested follow-ups" or "You could also:". Leading `[Topic]` tags route each bullet directly into its stream, `[check]` / `[decide]` tags mark steps for you, nested lists become subtrees, and sub-headings become groups. Soft headings (`Ideas`, `Consider`, `Options`) with no clear action verb are verified by the model in `auto` mode before being added.
+- **Offers** in the closing lines, like "Want me to add tests or update the README?". Each concrete option becomes its own step, while vague conversational sign-offs ("make any adjustments", "walk you through it", "go into more detail") are filtered out.
+- **Todo and task lists**: open items from `TodoWrite` and `TaskCreate` / `TaskUpdate`, updated as they change.
+- **GitHub Issues**: `/upnext issues import` pulls open repository issues via `gh` into an **Issues** stream.
+- **A guess, when there is nothing else**: if a reply lists no steps, a fork of the session reads the conversation. It either finds the steps the reply implies, or adds a dim **Likely next** group with up to three prompts you'd probably send next. Replies that list their steps cost nothing.
 
 A step can be a slash command, like `/code-review high`. Steps naming a command this session doesn't have are dropped. The model is also told which skills and commands you have, so it can suggest them.
 
@@ -158,10 +171,10 @@ Each line of work gets its own **stream** (●), kept across turns:
 - **Fixing it up:**
   - ✎ on a stream renames it, and offers **merge into → another stream**.
   - ✎ on a step offers **move to → another stream** or **→ new stream**.
-- **Not streams:** Bash hints, the todo list and "Likely next" guesses stay as their own groups.
+- **Not streams:** the todo list and "Likely next" guesses stay as their own groups.
 - **Colours:** each stream gets its own colour, picked so neighbours differ. The lines above the prompt show each step's stream in its colour.
-- **Archive (⊟):** parks a stream. It leaves the tree, the lines above the prompt and the count, and waits under **Archived** at the bottom of the pane until you press **restore**. If a reply picks the topic up again, the stream comes back by itself.
-- **One stream only (◎):** shows just that stream. **Show all** (`a`) brings the rest back. `/upnext <name>` does the same from the prompt.
+- **Archive (⊟):** parks a stream. It leaves the tree, the lines above the prompt and the count, and waits under **Archived** at the bottom of the pane until you press **restore** (protected from eviction even past 24 groups). If a reply picks the topic up again, the stream comes back by itself.
+- **One stream only (◎):** shows just that stream. **Show all** (`a`) brings the rest back. `/upnext <name>` does the same from the prompt. If new steps land in a different stream while filtered, a drift toast lets you know so nothing is hidden silently.
 - **Nudges:** a stream with open steps and no activity for 10 turns gets one toast, so it isn't forgotten. Change or turn off with `nudgeAfter`.
 
 ▶▶ and ⇶ work per stream. Only one stream can run in order at a time, since it uses the main conversation, but background agents can work on other streams meanwhile.
@@ -240,14 +253,14 @@ The row under the mouse lights up.
 | Click a step | Puts its prompt in the prompt box as a draft. Edit it, then press Enter. Its sub-steps go along with it. |
 | ▶ on a step | Sends it right away. |
 | ▶ on a group | Sends every open step in the group as one prompt. |
-| ▶▶ on a group | Runs the group in order, one step per turn. It moves on when a step is ✓ and stops at the first that isn't, or when you interrupt. A bar at the top shows progress, with Stop (`q`). |
+| ▶▶ on a group | Records a short git checkpoint (`HEAD` SHA), then runs the group in order, one step per turn. It moves on when a step is ✓ and stops at the first that isn't (showing the checkpoint SHA in the toast), or when you interrupt. A bar at the top shows progress and the starting commit, with Stop (`q`). |
 | + on a group | Adds your own step to that group. |
 | ✎ on a step | Edits its text in place. Enter saves; ✕ cancels. |
 | ⇶ on a group | Hands each open step (up to five) to its own background agent. Each step shows ⇶ while its agent works, then ✓ or ✗, with a toast. |
 | Hover a step | Shows the full prompt it will draft or send (terminal). |
 | `1` `2` `3` | From an empty prompt box: acts on that step from the lines above the prompt (drafts a prompt, ticks a check, starts your answer to a decision). `0` hides them until the next turn. |
 | Tab | Takes the top new step, shown as dim ghost text in the prompt box. |
-| ✕ | Dismisses the step or the group. |
+| ✕ | Dismisses the step or the group (`Clear all` asks for a second click to confirm). |
 | ▾ / ▸ | Folds or unfolds. |
 | The field at the bottom | Adds your own step to a **Your steps** group. |
 | Tidy (`t`) | Asks a fork of the session which open steps are already done or no longer relevant, marks or removes them, and says what changed. Costs about one short reply per click. |
@@ -258,19 +271,22 @@ The row under the mouse lights up.
 | `p` / `e` / `o` | Re-rank the most important steps / show or fold everything else / show or fold older steps. |
 | `z` / `c` / `t` | Fold all / clear done / tidy. `q` stops a run in order. |
 
-Steps found in Bash output are only ever drafted, never sent straight away (their group shows ✎ instead of ▶), since that output can come from anywhere.
+**Ticked off for you:** after a `git commit`, open steps the commit message covers—plus generic `"commit the changes"` steps—get ✓. After a `git push`, push steps get ✓. After a test run that passes, steps like `"fix the failing test"` or `"run the tests"` get ✓. A toast says what was ticked. Turn this off with `autoTick`.
 
-**Ticked off for you:** after a `git commit`, open steps the commit message clearly covers get ✓. After a test run that passes, steps like "fix the failing test" or "run the tests" get ✓. A toast says what was ticked. Turn this off with `autoTick`.
+The status mark shows progress: ○ open, ◌ queued, ◐ running, ⇶ with a background agent, ✓ done, ✗ not done. Clicking or sending a `✓` step (when `clearDoneAfter` keeps done steps visible) reopens it and tracks its new run.
 
-The status mark shows progress: ○ open, ◌ queued, ◐ running, ⇶ with a background agent, ✓ done, ✗ not done.
+**Proof-based completion:** when a step's turn ends, it gets ✓ only if the turn succeeded—or ✗ if the last Bash/test command in that turn failed (`isError` or test failure) or the reply says it couldn't finish. In `auto` and `model` mode, a fork then checks the work and corrects the mark if needed.
 
-When a step's turn ends, it gets ✓, or ✗ if the reply says it couldn't finish. In `auto` and `model` mode, a fork then checks the work and corrects the mark if needed. **Prompts you type clear steps too.** If what you type clearly asks for an open step, it is marked running and cleared when the turn ends. Matching looks at the step's meaningful words (not "the", "please"…), and a short "do 2" or "#3" means that step's number in the pane. When a typed prompt matches no step, Haiku reads a short brief (the open steps, your prompt, the start of the reply) and says which steps the turn actually completed; those are cleared. That costs one small call, only on such turns, only with `rank: auto`. A step whose done-check is still running stays until the check answers, so a ✗ can still land.
+**Prompts you type clear and prune steps too.** If what you type clearly asks for an open step, it is marked running and cleared when the turn ends. Matching looks at the step's meaningful words (not `"the"`, `"please"`…), and a short `"do 2"` or `"#3"` means that step's number in the pane. When a typed prompt matches no step, Haiku reads a short brief (the open steps, your prompt, the start of the reply) and says which steps the turn completed (`done`) or explicitly decided against/superseded (`drop`).
 
-**Each session has its own list.** A new session starts empty, even in the same project folder; resuming a session (`claude --resume`) brings its own open steps back, folded and marked "earlier". In herdr, the popup shows the list of the Claude session in the pane it opens over, never another session's. The status line shows how many are open.
+## Session handoff, PR summaries & GitHub Issues
 
-**After `/clear`, or in a new session**, steps from before are folded and marked "earlier". The pane shows them exactly as before, but clicking one builds a prompt that stands on its own: the step itself instead of "Yes, please…", the stream it belongs to, and a note to check the code first, since some of it may be done. That wording is put together when you click and never stored. `/clear` also puts queued and running steps back to open and stops a run in order. Background agents (⇶) are left to finish.
-
-**When the context fills and Claude Code compacts it**, the conversation goes on as a summary. Up next adds its newest 15 open steps to the summarizer's instructions, so the summary keeps what they refer to (files, functions, decisions) and their prompts still make sense. Nothing in the pane changes. Steps past those 15 are marked "earlier" once the compaction is done, so they get the self-contained prompt.
+- **Wrap up for the next session (`/upnext wrap [file]`):** writes `NEXT_STEPS.md` (or a chosen file) with a handoff header (`> Goal`, `> Latest`, `> Completed`, `> Checkpoint`) followed by your open steps grouped by stream. Even when `clearDoneAfter: 0` sweeps completed steps from the live pane, `upnext` remembers up to 30 completed steps per session in its done log so they are included in your wrap-up and PR summary.
+- **Pick up in a fresh session (`/upnext carry [file]`):** starting a new session in a folder with `NEXT_STEPS.md` shows a toast reminder; `/upnext carry` imports its open steps by stream, marked `"earlier"` so clicking one builds a self-contained prompt.
+- **Draft a pull request summary (`/upnext pr`):** drafts a prompt asking Claude to write a PR title and description from the steps you completed in this session and any remaining follow-ups.
+- **Two-way GitHub Issues sync (`/upnext issues [import]`):** `/upnext issues` drafts a prompt to create GitHub issues from your open steps (waiting for your approval); `/upnext issues import` pulls open issues (`gh issue list`) into an **Issues** stream and reminds you to close `#N` with `gh issue close N` when its step completes.
+- **Each session has its own list:** a new session starts empty; resuming a session (`claude --resume`) brings its own open steps back, folded and marked `"earlier"`.
+- **Context compaction & `/clear`:** when Claude Code compacts the context, `upnext` adds its newest 15 open steps to the summarizer's instructions so the summary preserves the files, functions, and decisions they refer to. After `/clear`, steps are folded and marked `"earlier"`.
 
 | Command | What it does |
 | --- | --- |
@@ -313,6 +329,10 @@ Step text comes from replies and tool output, which can quote files and web page
 | `paneStyle` | `auto` | `auto`: inside herdr, a popup on a key and a sidebar line; elsewhere, the pane inside Claude. `split`: inside herdr, a pane beside Claude's that stays open. `claude`: always the pane inside Claude (`/upnext herdr` still works). |
 | `herdrLabel` | `true` | Inside herdr, sets the sidebar line (`upnext` token) and the title of Claude's pane. |
 | `herdrGlyphs` | `symbols` | `ascii` draws the herdr pane with plain characters. |
+
+## Acknowledgments
+
+Session wrap-up handoffs (`/upnext wrap` & `/upnext carry`), proof-based step completion, git checkpoints on sequential runs (`▶▶`), stream drift notices, PR summary drafting (`/upnext pr`), and GitHub issue import (`/upnext issues import`) were inspired by [`archid21/whatsnext`](https://github.com/archid21/whatsnext).
 
 ## License
 

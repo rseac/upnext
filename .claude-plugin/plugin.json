@@ -1,15 +1,23 @@
 {
   "name": "upnext",
   "version": "0.22.2",
-  "description": "Up next: a side pane that gathers the next steps Claude suggests into a tree you can click to draft, send, hand to background agents or dismiss.",
+  "description": "Up next: a Claude Code plugin that captures, ranks, and runs suggested next steps above the prompt, in a side pane, or across background agents—with session handoff, PR summaries, and GitHub Issues sync.",
   "icon": "./.claude-plugin/icon.png",
   "author": {
     "name": "rseac"
   },
   "license": "MIT",
   "keywords": [
+    "claude-code",
+    "claude-code-plugin",
     "upnext",
     "next-steps",
+    "task-manager",
+    "todo",
+    "session-handoff",
+    "github-issues",
+    "background-agents",
+    "herdr",
     "suggestions",
     "pane",
     "tree",
