@@ -23,7 +23,8 @@ export type ParsedRoot = {
 const CUE =
   /(?:^\W*(?:up )?next\W*$)|\b(next steps?|next up|what'?s next|what'?s left|what remains|still open|open items|before (?:merging|shipping|release)|where to go from here|going forward|suggest(?:ed|ions?)?|follow[- ]?ups?|to[- ]?dos?|action items?|recommend(?:ed|ations?)?|(?:some|a few|possible|your|other) options|you (?:could|can|might|may)(?: also)?|remaining|still to do|left to do|not (?:yet )?done|ideas|consider|further (?:work|improvements|steps)|possible (?:improvements|enhancements|extensions)|future work|want me to|would you like|should i|i can also|happy to|optional)\b/i
 // Softer cues that often mix commentary with suggestions; verified by the model in auto mode when no step is clearly an action.
-const WEAK_CUE = /\b(ideas?|consider|options|optional|notes?|further (?:work|improvements)|possible (?:improvements|enhancements|extensions)|future work)\b/i
+const WEAK_CUE =
+  /\b(ideas?|consider|options|optional|notes?|still open|open items|what remains|remaining|not (?:yet )?done|further (?:work|improvements)|possible (?:improvements|enhancements|extensions)|future work)\b/i
 const STRONG_CUE = /\b(next steps?|next up|what'?s next|what'?s left|follow[- ]?ups?|to[- ]?dos?|action items?|before (?:merging|shipping|release))\b/i
 
 const FENCE = /^\s*(```|~~~)/
@@ -167,10 +168,15 @@ function isAction(text: string): boolean {
 const COMMENTARY =
   /^(?:why|what|how|when|where|who|which|size|cost|effort|trade-?offs?|downsides?|upsides?|pros?|cons?|notes?|caveats?|risks?|impact|effect|results?|examples?|limits?|limitations?|status|tested|checks?|cause|reasons?|because|context|background|summary|tl;?dr|currently|so far|in short|the (?:catch|fix|problem|cause|idea|point|upshot)|benefits?|drawbacks?|gotchas?)\b/i
 
-/** A sentence about how things are ("The mod writes…", "It uses…"), not something to do. */
+const STATEMENT_START =
+  /^(?:the|this|that|these|those|it|its|it's|a|an|each|both|every|you|your|we|there|here|they|nothing|everything|one|all|no|none)\b/i
+const STATEMENT_VERB =
+  /\b(?:is|are|was|were|has|have|had|can'?t|cannot|couldn'?t|doesn'?t|don'?t|didn'?t|won'?t|isn'?t|aren'?t|wasn'?t|weren'?t|runs?|ran|stays?|remained)\b/i
+
+/** A sentence about how things are ("The mod writes…", "Rows with X are 1–3% high"), not something to do. */
 function isStatement(text: string): boolean {
   const t = plain(text)
-  return !isAction(t) && /^(?:the|this|that|these|those|it|its|it's|a|an|each|both|every|you|your|we|there|here|they|nothing|everything|one|all)\b/i.test(t)
+  return !isAction(t) && (STATEMENT_START.test(t) || STATEMENT_VERB.test(t))
 }
 
 /**
@@ -197,7 +203,7 @@ const MAX_SECTION_STEPS = 10
 function keepSteps(steps: ParsedStep[]): ParsedStep[] {
   const kept = dropExplanations(steps)
   const all = kept.flatMap(s => [s, ...s.children])
-  if (all.length >= 2 && all.every(s => isStatement(s.text))) return []
+  if (all.length >= 1 && all.every(s => isStatement(s.text))) return []
   return kept.slice(0, MAX_SECTION_STEPS)
 }
 

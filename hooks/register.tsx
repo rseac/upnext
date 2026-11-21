@@ -585,7 +585,15 @@ async function restore($: EngineInterface) {
       title: clean(r.title, 80),
       turn: 0,
       isCollapsed: true,
-      steps: mapSteps(r.steps, s => ({ ...s, text: clean(s.text), prompt: clean(s.prompt, 4000), status: 'open', isEarlier: true })),
+      steps: mapSteps(r.steps, s => ({
+        ...s,
+        text: clean(s.text),
+        prompt: clean(s.prompt, 4000),
+        status: 'open',
+        isEarlier: true,
+        addedTurn: undefined,
+        touchedTurn: undefined,
+      })),
     })),
   )
 }
@@ -1292,17 +1300,30 @@ async function sweep($: EngineInterface, turn: number) {
 /** Steps whose done-check is still out: not cleared until it answers (it may say ✗). */
 const awaitingCheck = new Set<string>()
 
+/** Keeps both the opening and closing of a long reply so end-of-reply recommendations are not cut off. */
+function excerpt(text: string, max: number): string {
+  const full = clean(text, max * 4)
+  const points = [...full]
+  if (points.length <= max) return full
+  const head = Math.floor(max * 0.55)
+  const tail = Math.max(0, max - head - 3)
+  return `${points.slice(0, head).join('')} … ${points.slice(points.length - tail).join('')}`
+}
+
+const SYSTEM_TURN =
+  /^\s*(?:<(?:task-notification|system-reminder|local-command-|command-(?:name|message)|agent-message)\b|Another Claude session sent a message:|#\s+\/[a-z][\w-]*\s+—|\[\d+\s+prior\s+\/loop\b)/i
+
 /** The prompt the person typed for the turn now running, when it was not sent from the pane. */
 let typedTurn: { turnId: string; text: string } | null = null
 
 /**
  * When a turn the person typed matched no step: ask Haiku which open steps the
- * turn actually completed, from a short brief (the steps, the prompt, the start
- * of the reply). Those are marked done and cleared.
+ * turn actually completed, from a short brief (the steps, the prompt, an
+ * excerpt of the reply). Those are marked done and cleared.
  */
 async function doneCheck($: EngineInterface, prompt: string, answer: string, turn: number) {
   const open = candidates(await read($, rootsA), turn)
-    .filter(c => c.step.forYou !== 'check')
+    .filter(c => c.step.forYou !== 'check' && c.step.addedTurn !== turn)
     .slice(0, 30)
   if (open.length === 0) return
   const brief = [
@@ -1319,7 +1340,7 @@ async function doneCheck($: EngineInterface, prompt: string, answer: string, tur
     clean(prompt, 600),
     '',
     "The start of the assistant's reply:",
-    clean(answer, 1500),
+    excerpt(answer, 1800),
   ].join('\n')
   try {
     const r = await $.model.complete({ model: 'haiku', prompt: brief, maxTokens: 100, timeoutMs: 30000 })
@@ -1452,7 +1473,7 @@ function localScore(
   if (SOFT.test(t)) score -= 2
   if (c.root.kind === 'tool') score -= 1
   if (c.root.kind === 'likely') score -= 1.5
-  if (c.step.isEarlier === true) score -= 1
+  if (c.step.isEarlier === true) score -= 2.5
   if (c.root.kind === 'stream' && cfg.nudgeAfter > 0 && c.root.turn > 0 && turn - c.root.turn >= cfg.nudgeAfter) score -= 1
   if (isStale(c.step, c.root, turn)) score -= 2
   const best = reasons.sort((a, b) => b[0] - a[0])[0]
@@ -1704,10 +1725,13 @@ async function afterClear($: EngineInterface) {
   await changeRoots($, roots =>
     roots.map(r => ({
       ...r,
+      turn: 0,
       isCollapsed: true,
       steps: mapSteps(r.steps, s => ({
         ...s,
         isEarlier: true,
+        addedTurn: undefined,
+        touchedTurn: undefined,
         // A background agent may still finish; anything else in flight is open again.
         status: s.agentId === undefined && s.handedPane === undefined && (s.status === 'queued' || s.status === 'running') ? 'open' : s.status,
       })),
@@ -1717,7 +1741,7 @@ async function afterClear($: EngineInterface) {
 
 // ---- Ticking steps off from what happened: commits, and test runs that pass ----
 
-const COMMIT = /\bgit\b[^|;&\n]*\bcommit\b/
+const COMMIT = /\bgit\b[^|;&\n]*\b(?:commit|merge)\b/
 const PUSH = /\bgit\b[^|;&\n]*\bpush\b/
 const COMMIT_STEP =
   /^(?:please\s+)?git\s+commit\b|^(?:please\s+)?commit\s+(?:the\s+|these\s+|our\s+|your\s+|all\s+)?(?:changes|work|fixes|fix|updates|files|it|everything)(?:\s+and\s+push)?$/i
@@ -1729,15 +1753,22 @@ const TEST_FAILED = /\b[1-9]\d*\s+(?:fail(?:s|ed|ing|ures?)?|errors?)\b|\bFAIL(?
 const TEST_STEP =
   /\b(?:fix|get|make)\b.*\b(?:fail(?:ing|ed|ures?)?|broken|red|flaky)\b.*\btests?\b|\btests?\b.*\b(?:pass(?:ing)?|green)\b|^(?:re-?)?run (?:the )?(?:full |whole |unit |integration )?(?:tests?|test suite|suite)\b/i
 
-/** Open steps a commit message clearly covers: most of the step's meaningful words are in it. */
-function coveredBy(roots: Root[], message: string): Step[] {
+/** Open steps a commit or merge clearly covers: most meaningful words match, or the named branch was merged. */
+function coveredBy(roots: Root[], message: string, command = ''): Step[] {
   const said = meaningful(message)
+  const merged = /\bgit\b[^|;&\n]*\bmerge\b/i.test(command) ? `${command}\n${message}`.toLowerCase() : ''
   return live(roots)
     .filter(r => r.kind !== 'tool' && r.kind !== 'likely')
     .flatMap(r => allSteps(r.steps))
     .filter(s => {
       if (s.status === 'done' || s.agentId !== undefined || s.children.some(isOpen)) return false
-      const own = meaningful(s.text)
+      const text = plain(s.text)
+      if (merged !== '') {
+        const m = /\bmerge\s+`?([a-z0-9][\w./-]*)`?(?:\s+and\s+`?([a-z0-9][\w./-]*[-/\d][\w./-]*)`?)?/i.exec(text)
+        const targets = [m?.[1], m?.[2]].filter((b): b is string => b !== undefined && /[-/\d]/.test(b)).map(b => b.toLowerCase())
+        if (targets.length > 0 && targets.every(b => merged.includes(b))) return true
+      }
+      const own = meaningful(text)
       if (own.size < 2) return false
       let shared = 0
       for (const w of own) if (said.has(w)) shared += 1
@@ -1754,11 +1785,11 @@ async function tick($: EngineInterface, steps: Step[], why: string) {
   $.ui.toast(`upnext: ✓ ${first}${steps.length > 1 ? ` and ${steps.length - 1} more` : ''} (${why})`)
 }
 
-/** After a Bash call: a commit ticks the steps its message covers; a push, push steps; a passing test run, test steps. */
+/** After a Bash call: a commit/merge ticks the steps it covers; a push, push steps; a passing test run, test steps. */
 async function tickFromBash($: EngineInterface, command: string, output: string, isError: boolean) {
   if (isError) return
   let roots = await read($, rootsA)
-  if (COMMIT.test(command) && !/\b(?:nothing to commit|no changes added)\b/.test(output)) {
+  if (COMMIT.test(command) && !/\b(?:nothing to commit|no changes added|Already up to date)\b/i.test(output)) {
     let message = ''
     try {
       const r = await $.process.run(['git', 'log', '-1', '--format=%B'], { cwd: cfg.sessionCwd || undefined, timeoutMs: 5000 })
@@ -1766,7 +1797,7 @@ async function tickFromBash($: EngineInterface, command: string, output: string,
     } catch {
       message = ''
     }
-    const covered = message.trim() !== '' ? coveredBy(roots, message) : []
+    const covered = message.trim() !== '' || /\bmerge\b/i.test(command) ? coveredBy(roots, message, command) : []
     const generic = live(roots)
       .filter(r => r.kind !== 'tool' && r.kind !== 'likely')
       .flatMap(r => allSteps(r.steps))
@@ -2420,10 +2451,9 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined && keepAcrossSessions) await restore($)
     if (e.agentId === undefined) {
       rankCtx.turnBashFailed = false
-      const said = clean(e.text, 200)
+      const isSys = SYSTEM_TURN.test(e.text)
+      const said = isSys ? '' : clean(e.text, 200)
       if (said !== '' && !said.startsWith('/')) rankCtx.prompts = [...rankCtx.prompts, said].slice(-4)
-    }
-    if (e.agentId === undefined) {
       const text = e.text.trim()
       let ids: string[] = []
       await update($, inflightA, list => {
@@ -2432,8 +2462,9 @@ export const register: Register = (on, options) => {
         ids = list[i]!.stepIds
         return list.map((f, j): Inflight => (j === i ? { ...f, turnId: e.turnId } : f))
       })
-      typedTurn = ids.length === 0 ? { turnId: e.turnId, text } : null
-      if (ids.length === 0) {
+      const effectivePrompt = isSys ? (rankCtx.prompts.at(-1) || '(background agent / loop turn)') : text
+      typedTurn = ids.length === 0 ? { turnId: e.turnId, text: effectivePrompt } : null
+      if (ids.length === 0 && !isSys) {
         const step = matchTyped(await read($, rootsA), text, await paneOrder($))
         if (step) {
           ids = openIds([step, ...allSteps(step.children)])
@@ -2449,7 +2480,7 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     await pollViewer($)
     const answer = e.reason === 'answer' ? e.answer : ''
-    if (e.agentId === undefined && answer !== '') rankCtx.lastAnswer = clean(answer, 1200)
+    if (e.agentId === undefined && answer !== '') rankCtx.lastAnswer = excerpt(answer, 1200)
     if (e.agentId !== undefined) {
       await finishAgent($, e.agentId, e.reason, answer)
       return result

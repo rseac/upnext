@@ -101,3 +101,18 @@ test('generic commit and push steps tick on git commit and git push', async ($, 
   expect(toasts.at(-1)).toContain('(pushed)')
   await ui.unmount()
 })
+
+test('git merge ticks steps that wait on merging that branch', async ($, on) => {
+  engine(on, 'Merge branch vec-bp1', 'Fast-forward')
+  await $.session.start({ cwd: '/t6', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({
+    ...TURN,
+    answer: '## Next steps\n- Wait for BP1 result, then merge `vec-bp1` and run the keep rule\n- Update the changelog',
+    turnId: 't1',
+  })
+  await $.tool.call({ tool: 'Bash', command: 'git merge vec-bp1' } as never)
+  const ui = await $.ui.mount(PANE)
+  expect(await statusOf(ui, /merge vec-bp1/)).toBe('✓')
+  expect(await statusOf(ui, /Update the changelog/)).toBe('○')
+  await ui.unmount()
+})

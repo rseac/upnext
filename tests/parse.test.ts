@@ -113,3 +113,13 @@ test('leading [Stream] and [check]/[decide] tags split sections by stream and se
   ])
   expect(roots[1]!.steps.map(s => [s.text, s.forYou])).toEqual([['Pick whether to document the legacy flag', 'decide']])
 })
+
+test('status and defect lists under "Still open" are dropped as statements', async () => {
+  const reply = [
+    '**Still open:**',
+    '- An ordinary store right after a segment load runs 4–7 ticks low.',
+    '- Rows with a `vadd` consumer are 1–3 % high.',
+    "- The indexed segment form can't be checked, because its index values aren't in the trace.",
+  ].join('\n')
+  expect(parseReply(reply)).toEqual([])
+})

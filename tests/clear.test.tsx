@@ -109,3 +109,37 @@ test('if the list is ever found empty, the saved steps come back before a turn s
   expect(JSON.stringify(kept['roots:session:sess-c'])).toContain('Rotate the signing key')
   await ui.unmount()
 })
+
+test('restored steps with high addedTurn do not sort ahead of new steps in a resumed session', async ($, on) => {
+  const kept: Record<string, unknown> = {
+    'roots:session:sess-c': [
+      {
+        id: 'r1',
+        kind: 'stream',
+        title: 'Auth',
+        turn: 38,
+        isCollapsed: false,
+        steps: [
+          {
+            id: 'r1.0',
+            text: 'Rotate the old key',
+            prompt: 'Rotate the old key',
+            status: 'open',
+            isCollapsed: false,
+            addedTurn: 38,
+            touchedTurn: 38,
+            children: [],
+          },
+        ],
+      },
+    ],
+  }
+  engine(on, kept)
+  await $.session.start({ cwd: '/c4', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({ ...TURN, answer: '## Auth follow-ups\n- Add fresh token check', turnId: 't1' })
+  const ui = await $.ui.mount(PANE)
+  const rows = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('run:')).map(b => b.text ?? '')
+  expect(rows[0]).toContain('Add fresh token check')
+  expect(rows[1]).toContain('Rotate the old key')
+  await ui.unmount()
+})

@@ -107,3 +107,23 @@ test('doneCheck can drop superseded steps without dropping your own steps', asyn
   expect(await texts(ui)).toContain('Keep my own reminder')
   await ui.unmount()
 })
+
+test('system task notifications do not overwrite the developer prompt in doneCheck, and long replies keep their tail', async ($, on) => {
+  const { briefs } = engine(on, ['{"done":[1]}'])
+  await $.session.start({ cwd: '/y5', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'finish the branch predictor calibration', turnId: 't1' } as never)
+  await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
+  await $.turn.start({
+    text: '<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n</task-notification>',
+    turnId: 't2',
+  } as never)
+  const longAnswer = `${'Status report row. '.repeat(120)}\n\nClosing summary: rotated the signing key and verified all checks.`
+  await $.turn.complete({ ...TURN, answer: longAnswer, turnId: 't2' })
+  const ui = await $.ui.mount(PANE)
+  for (let i = 0; i < 100 && (await texts(ui)).includes('Rotate the signing key'); i++) await tick()
+  expect(briefs.length).toBe(1)
+  expect(briefs[0]).toContain('finish the branch predictor calibration')
+  expect(briefs[0]).not.toContain('<task-notification>')
+  expect(briefs[0]).toContain('Closing summary: rotated the signing key')
+  await ui.unmount()
+})
