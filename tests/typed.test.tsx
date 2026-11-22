@@ -47,7 +47,7 @@ function engine(on: On, judge: string[] = []) {
 const ANSWER = '## Next steps\n- Rotate the signing key\n- Add expiry tests for refresh tokens\n- Update the changelog for the release'
 
 const texts = async (ui: { findAll: (q: { type?: string }) => Promise<Found[]> }) =>
-  (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('run:')).map(b => b.text?.replace(/^\S+ /, ''))
+  (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('run:')).map(b => b.text?.replace(/^\S+ /, '').replace(/ •$/, ''))
 
 test('a typed prompt that asks for a step clears it when the turn ends', async ($, on) => {
   const { toasts } = engine(on)
@@ -125,5 +125,86 @@ test('system task notifications do not overwrite the developer prompt in doneChe
   expect(briefs[0]).toContain('finish the branch predictor calibration')
   expect(briefs[0]).not.toContain('<task-notification>')
   expect(briefs[0]).toContain('Closing summary: rotated the signing key')
+  await ui.unmount()
+})
+
+test('shorthand with an identifier, "do it", "1 and 3", and edited drafts all clear the steps they target', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/y6', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({
+    ...TURN,
+    answer: [
+      '## Next steps',
+      '- Take one waveform of `thresh` to test the BJU2 extra vset/i2v uop hypothesis',
+      '- Rotate the signing key for the auth service',
+      '- Update the changelog for the release',
+      '- Decide whether to keep or delete `build/vec-wt-archive/` (1.5 GB)',
+    ].join('\n'),
+    turnId: 't1',
+  })
+  // Shorthand that only names 2 words + identifier out of 11 words in the step.
+  await $.turn.start({ text: 'take a waveform of thresh', turnId: 't2' } as never)
+  await $.turn.complete({ ...TURN, answer: 'Took the thresh waveform.', turnId: 't2' })
+  let ui = await $.ui.mount(PANE)
+  expect(await texts(ui)).not.toContain('Take one waveform of `thresh` to test the BJU2 extra vset/i2v uop hypothesis')
+
+  // Answering a decide step directly by its path without repeating the whole sentence.
+  await $.turn.start({ text: 'delete build/vec-wt-archive', turnId: 't3' } as never)
+  await $.turn.complete({ ...TURN, answer: 'Deleted build/vec-wt-archive.', turnId: 't3' })
+  expect((await texts(ui)).some(t => t?.includes('vec-wt-archive'))).toBe(false)
+
+  // "do it" targets the top remaining step; "both" targets the remaining two.
+  await $.turn.start({ text: 'do both', turnId: 't4' } as never)
+  await $.turn.complete({ ...TURN, answer: 'Rotated the key and updated the changelog.', turnId: 't4' })
+  expect(await texts(ui)).toEqual([])
+  await ui.unmount()
+})
+
+test('a later reply that marks an open checklist step [x] completes and clears it', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/y7', surface: 'terminal', isInteractive: true })
+  await $.turn.complete({
+    ...TURN,
+    answer: '## What remains\n- [ ] Calibrate RTL latencies\n- [ ] Integrate simulator',
+    turnId: 't1',
+  })
+  await $.turn.complete({
+    ...TURN,
+    answer: '## What remains\n- [x] Calibrate RTL latencies\n- [ ] Integrate simulator',
+    turnId: 't2',
+  })
+  const ui = await $.ui.mount(PANE)
+  expect(await texts(ui)).toEqual(['Integrate simulator'])
+  await ui.unmount()
+})
+
+test('prompt.section hands Claude the open list, and the next reply replaces unpinned auto-suggestions while keeping pinned steps', async ($, on) => {
+  engine(on)
+  on('prompt.section', (_, e) => ({ text: e.text }))
+  await $.session.start({ cwd: '/y8', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount(PANE)
+  await ui.input({ key: 'add-mine', text: 'Pin my release checklist' })
+  await $.turn.complete({
+    ...TURN,
+    answer: '## Next steps\n- [Auth] Rotate the signing key\n- [Auth] Add expiry tests for refresh tokens\n- [Issues] #42 Fix token refresh race',
+    turnId: 't1',
+  })
+
+  const section = await $.prompt.section({ name: 'output_efficiency', text: 'Be concise.' } as never)
+  expect((section as { text?: string }).text).toContain('Currently open steps:')
+  expect((section as { text?: string }).text).toContain('- [Auth] Rotate the signing key')
+
+  // Next turn emits the updated surviving Next steps list: omitted auto-suggestions are replaced, while Your steps and #42 stay.
+  await $.turn.complete({
+    ...TURN,
+    answer: '## Next steps\n- [Auth] Add expiry tests for refresh tokens\n- [Auth] Wire the revoke endpoint',
+    turnId: 't2',
+  })
+  const openNow = await texts(ui)
+  expect(openNow).toContain('Add expiry tests for refresh tokens')
+  expect(openNow).toContain('Wire the revoke endpoint')
+  expect(openNow).toContain('Pin my release checklist')
+  expect(openNow).toContain('#42 Fix token refresh race')
+  expect(openNow).not.toContain('Rotate the signing key')
   await ui.unmount()
 })
