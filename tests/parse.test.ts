@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { clean, forYouOf, parseChecklist, parseOffers, parseReply, wrapRuns, runsOf } from '../hooks/parse'
+import { clean, forYouOf, parseChecklist, parseOffers, parsePlan, parseReply, wrapRuns, runsOf } from '../hooks/parse'
 
 const REPLY = `Done: the parser now handles nested lists.
 
@@ -122,4 +122,29 @@ test('status and defect lists under "Still open" are dropped as statements', asy
     "- The indexed segment form can't be checked, because its index values aren't in the trace.",
   ].join('\n')
   expect(parseReply(reply)).toEqual([])
+})
+
+test('parsePlan extracts completed and open steps across phases while skipping context prose', async () => {
+  const md = [
+    '# Plan: Vector Memory Model',
+    '',
+    '## Context',
+    '- The load bank uses 8 ways across 2 sub-banks.',
+    '',
+    '## Phase 1: Extraction',
+    '- [x] Extract load-side pointer bank signals',
+    '- [ ] Derive max-plus timing constraints for bank conflict',
+    '',
+    '## Phase 2: Validation',
+    '1. Fit latency parameters on batch 92',
+    '2. Run unseen batch 93 regression',
+  ].join('\n')
+  const plan = parsePlan(md)
+  expect(plan?.title).toBe('Vector Memory Model')
+  expect(plan?.steps.map(s => ({ text: s.text, isDone: s.isDone ?? false }))).toEqual([
+    { text: 'Extract load-side pointer bank signals', isDone: true },
+    { text: 'Derive max-plus timing constraints for bank conflict', isDone: false },
+    { text: 'Fit latency parameters on batch 92', isDone: false },
+    { text: 'Run unseen batch 93 regression', isDone: false },
+  ])
 })

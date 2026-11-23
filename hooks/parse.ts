@@ -440,6 +440,123 @@ export function parseChecklist(md: string): ParsedRoot[] {
   return roots
 }
 
+const SKIP_PLAN_SECTION =
+  /^(?:context|background|overview|summary|problem|motivation|non-?goals?|references|appendix|history|completed|done|notes|constraints|assumptions|architecture|design)\b/i
+const STEP_HEADING = /^(?:(phase|stage|part|milestone|step|task)\s+\d+\s*[:.—-]\s*(.+)|\d{1,2}[.)]\s+(.+))$/i
+const PLAN_META_LABEL = /^(?:files?|paths?|why|what|how|when|where|notes?|risks?|impact|context|status|output|inputs?|depends?(?:\s+on)?|verify|verification)\s*:/i
+
+function stripDoneMark(raw: string): { text: string; isDone: boolean } {
+  let t = raw.trim()
+  let isDone = false
+  if (/^~~.+~~$/.test(t)) {
+    t = t.slice(2, -2).trim()
+    isDone = true
+  }
+  if (/^(?:✓|✔|✅|\[(?:x|done|completed)\])\s+/i.test(t)) {
+    t = t.replace(/^(?:✓|✔|✅|\[(?:x|done|completed)\])\s+/i, '').trim()
+    isDone = true
+  }
+  if (/\s+(?:✓|✔|✅|\((?:done|completed)\)|\[(?:done|completed)\])$/i.test(t)) {
+    t = t.replace(/\s+(?:✓|✔|✅|\((?:done|completed)\)|\[(?:done|completed)\])$/i, '').trim()
+    isDone = true
+  }
+  return { text: t, isDone }
+}
+
+/**
+ * Parses a plan document (from Plan Mode, `PLAN.md`, `NEXT_STEPS.md`, `TODO.md`,
+ * or `docs/*plan*.md`) into a single ordered `ParsedRoot`, keeping both
+ * completed (`isDone: true`) and open steps in sequence.
+ */
+export function parsePlan(md: string, fallbackTitle = 'Plan'): ParsedRoot | undefined {
+  let title = ''
+  const steps: ParsedStep[] = []
+  let stack: { indent: number; node: ParsedStep }[] = []
+  let inFence = false
+  let skipSection = false
+  let completedSection = false
+  let pendingHeading: { kind: string; step: ParsedStep; sawList: boolean } | undefined
+
+  const flushHeading = () => {
+    if (pendingHeading && !pendingHeading.sawList && pendingHeading.step.text !== '') {
+      steps.push(pendingHeading.step)
+    }
+    pendingHeading = undefined
+    stack = []
+  }
+
+  for (const raw of md.split(/\r?\n/)) {
+    if (FENCE.test(raw)) {
+      inFence = !inFence
+      continue
+    }
+    if (inFence || raw.trim() === '') continue
+    const h = HEADING.exec(raw)
+    if (h) {
+      flushHeading()
+      const level = h[1]!.length
+      const hText = tidy(h[2]!.replace(/\s*\(archived\)\s*$/i, ''))
+      if (level === 1 && title === '') {
+        title = hText.replace(/^plan\s*[:—-]\s*/i, '').trim() || hText
+        continue
+      }
+      const sh = STEP_HEADING.exec(hText)
+      if (sh) {
+        const kind = (sh[1] ?? 'step').toLowerCase()
+        const body = stripDoneMark(tidy(sh[2] ?? sh[3] ?? ''))
+        skipSection = false
+        completedSection = false
+        if (body.text !== '') {
+          pendingHeading = {
+            kind,
+            step: { text: body.text, children: [], ...(body.isDone ? { isDone: true } : {}) },
+            sawList: false,
+          }
+        }
+        continue
+      }
+      completedSection = /^(?:completed|done)\b/i.test(hText)
+      skipSection = !completedSection && SKIP_PLAN_SECTION.test(hText)
+      continue
+    }
+
+    const m = LIST.exec(raw)
+    if (!m) continue
+    const hasBox = m[2] !== undefined
+    if (skipSection && !hasBox) continue
+    const indent = indentOf(m[1]!)
+    const rawItem = stripDoneMark(tidy(m[3]!))
+    const tagged = parseStepTags(rawItem.text)
+    if (tagged.text === '') continue
+    if (!hasBox) {
+      if (PLAN_META_LABEL.test(plain(tagged.text))) continue
+      const label = /^([^:`]{1,48}):\s+\S/.exec(plain(tagged.text))
+      if (label && COMMENTARY.test(label[1]!.trim())) continue
+      if (indent === 0 && isStatement(tagged.text) && !/^\s*\d{1,3}[.)]/.test(raw)) continue
+    }
+    const isDone = m[2]?.toLowerCase() === 'x' || rawItem.isDone || completedSection
+    const forYou = tagged.forYou ?? forYouOf(tagged.text)
+    const node: ParsedStep = {
+      text: tagged.text,
+      children: [],
+      ...(isDone ? { isDone: true } : {}),
+      ...(tagged.stream ? { stream: tagged.stream } : {}),
+      ...(forYou ? { forYou } : {}),
+    }
+    if (pendingHeading) pendingHeading.sawList = true
+    while (stack.length > 0 && stack[stack.length - 1]!.indent >= indent) stack.pop()
+    const parent = stack[stack.length - 1]?.node
+    if (parent) parent.children.push(node)
+    else steps.push(node)
+    stack.push({ indent, node })
+  }
+  flushHeading()
+  const finalSteps = prune(steps)
+  if (finalSteps.length === 0) return undefined
+  const cleanTitle = tidy(title) || tidy(fallbackTitle) || 'Plan'
+  return { kind: 'reply', title: cleanTitle, stream: cleanTitle, steps: finalSteps }
+}
+
 /**
  * The slash command a step runs, if it is one: "/review high", "`/review`",
  * "Run `/review high`". Returns the command line without backticks.

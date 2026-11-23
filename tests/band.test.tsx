@@ -100,3 +100,60 @@ test('top-ranked steps with open sub-steps show +N next to their text in AbovePr
   expect(texts.some(t => t === ' +2')).toBe(true)
   await band.unmount()
 })
+
+test('a plan consolidates with LLM suggestions, ranks the next plan frontier first, and opens in the pane on p', async ($, on) => {
+  const { opened } = engine(on)
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  await $.session.start({ cwd: '/b5', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'Write',
+    toolUseId: 'w1',
+    file_path: 'PLAN.md',
+    content: [
+      '# Vector Memory Plan',
+      '',
+      '## Phase 1: Extraction',
+      '- [x] Extract load-side pointer bank signals',
+      '- [ ] Derive max-plus timing constraints for bank conflict',
+      '',
+      '## Phase 2: Validation',
+      '- [ ] Fit latency parameters',
+      '- [ ] Run unseen batch 93 regression',
+      '- [ ] Archive old trace logs',
+    ].join('\n'),
+  } as never)
+
+  // Turn 1 suggests a tactical sub-step for the frontier plan step and a more concrete phrasing of step 3.
+  await $.turn.complete({
+    ...TURN,
+    answer: [
+      '## Next steps',
+      '- Run `ptrb_next48np.elf` to measure bank conflict timing',
+      '- Fit latency parameters on `batch92.json`',
+    ].join('\n'),
+    turnId: 't1',
+  })
+
+  const band = await $.ui.mount(BAND as never)
+  const rows = (await band.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('b:') && b.key !== 'b:hide')
+  // Frontier plan step ranks first (with its consolidated tactical sub-step +1), and the refined step 3 is not duplicated.
+  expect(rows[0]!.text).toBe('○ Derive max-plus timing constraints for bank conflict')
+  const texts = (await band.findAll({ type: 'Text' })).map(t => t.text ?? '')
+  expect(texts.some(t => t === ' +1')).toBe(true)
+
+  // Pressing p ("plan-open") in the band opens the pane focused on the Plan view.
+  await band.press({ key: 'plan-open' })
+  expect(opened).toContain('upnext')
+  await band.unmount()
+
+  const pane = await $.ui.mount({
+    plugin: 'upnext',
+    component: 'Pane',
+    requestId: 'upnext',
+    surface: 'terminal',
+    props: { title: 'Up next', isFocused: true, bodyColumns: 90, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+  } as never)
+  const paneTexts = (await pane.findAll({ type: 'Text' })).map(t => t.text ?? '').join('\n')
+  expect(paneTexts).toContain('Plan: Vector Memory Plan (1/6 done)')
+  await pane.unmount()
+})

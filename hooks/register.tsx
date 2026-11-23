@@ -8,6 +8,7 @@ import {
   forYouOf,
   keyOf,
   parseChecklist,
+  parsePlan,
   parseReply,
   plain,
   runsOf,
@@ -905,10 +906,47 @@ function isSameStep(a: Step, b: Step): boolean {
   return shared / (x.size + y.size - shared) >= 0.7
 }
 
-/** Caps the tree at `MAX_ROOTS` without evicting "Your steps" (`mine`) or archived streams. */
+const isPlanRoot = (r: Root) => r.id === 'plan' || (r.source?.startsWith('plan:') ?? false)
+
+/** Whether an LLM suggestion and a plan step describe the same goal (e.g. a more concrete phrasing of the plan item). */
+function isSameGoal(planStep: Step, s: Step): boolean {
+  if (isSameStep(planStep, s)) return true
+  const x = meaningful(planStep.text)
+  const y = meaningful(s.text)
+  if (x.size < 2 || y.size < 2) return false
+  let shared = 0
+  for (const w of x) if (y.has(w)) shared += 1
+  const smaller = Math.min(x.size, y.size)
+  const larger = Math.max(x.size, y.size)
+  return shared / smaller >= 0.65 && shared / larger >= 0.45
+}
+
+/** Finds the open top-level plan step that a tactical LLM suggestion serves as a sub-step, if any. */
+function findPlanParentFor(planRoot: Root, s: Step): Step | undefined {
+  const openTop = planRoot.steps.filter(p => p.status === 'open' || p.status === 'failed')
+  if (openTop.length === 0) return undefined
+  const sIds = new Set(identifiersOf(s.text))
+  const sWords = meaningful(s.text)
+  let best: { step: Step; score: number } | undefined
+  openTop.forEach((p, idx) => {
+    const pIds = identifiersOf(p.text)
+    const idHits = pIds.filter(id => sIds.has(id)).length
+    const pWords = meaningful(p.text)
+    let wordHits = 0
+    for (const w of pWords) if (sWords.has(w)) wordHits += 1
+    const smaller = Math.min(pWords.size, sWords.size)
+    const ratio = smaller >= 2 ? wordHits / smaller : 0
+    if (idHits === 0 && (wordHits < 2 || ratio < 0.34)) return
+    const score = idHits * 2 + ratio + (idx === 0 ? 0.15 : 0)
+    if (!best || score > best.score) best = { step: p, score }
+  })
+  return best?.step
+}
+
+/** Caps the tree at `MAX_ROOTS` without evicting "Your steps" (`mine`), the active plan, or archived streams. */
 function capRoots(roots: Root[]): Root[] {
   if (roots.length <= MAX_ROOTS) return roots
-  const keep = (r: Root) => r.id === 'mine' || r.isArchived === true
+  const keep = (r: Root) => r.id === 'mine' || isPlanRoot(r) || r.isArchived === true
   let drop = roots.length - MAX_ROOTS
   const out: Root[] = []
   for (let i = roots.length - 1; i >= 0; i -= 1) {
@@ -925,6 +963,7 @@ const isStreamKind = (k: RootKind) => k === 'reply' || k === 'offer' || k === 'm
 const isPinnedStep = (s: Step, r: Root, marked: string[]) =>
   r.id === 'mine' ||
   r.kind === 'todo' ||
+  isPlanRoot(r) ||
   s.origin === 'mine' ||
   s.status === 'running' ||
   s.status === 'queued' ||
@@ -936,9 +975,9 @@ const isPinnedStep = (s: Step, r: Root, marked: string[]) =>
 /**
  * Puts each incoming reply or offer group into its stream (new or existing),
  * and the rest (tool hints, guesses) at the top as groups of their own.
- * When `replaceSuggested` is true (Claude was shown the open list in prompt.section
- * and emitted an updated `## Next steps`), unpinned auto-suggestions omitted from
- * the new list are dropped.
+ * When a plan exists, incoming LLM suggestions that match or refine an open plan
+ * step consolidate into that plan step (updating its prompt or attaching as a
+ * tactical sub-step) instead of creating duplicate items.
  */
 function mergeIncoming(
   roots: Root[],
@@ -953,6 +992,8 @@ function mergeIncoming(
   let added = 0
   const repeats: string[] = []
   const doneRepeats: string[] = []
+  const promptUpdates = new Map<string, string>()
+  const childAdditions = new Map<string, Step[]>()
   for (const group of incoming) {
     if (!isStreamKind(group.kind)) {
       loose.push(group)
@@ -960,18 +1001,48 @@ function mergeIncoming(
       continue
     }
     const streams = list.filter(r => r.kind === 'stream')
+    const planRoot = list.find(isPlanRoot)
+    const planPool = planRoot ? allSteps(planRoot.steps).filter(e => e.status !== 'done') : []
     const target = streamFor(streams, group)
     // A step suggested again, in any stream, refreshes the one already there instead of adding a copy.
     const pool = list.filter(r => isStreamKind(r.kind)).flatMap(r => allSteps(r.steps)).filter(e => e.status !== 'done')
     const fresh: Step[] = []
     for (const s of group.steps) {
-      const same = pool.find(e => isSameStep(e, s))
+      const planSame = planPool.find(e => isSameGoal(e, s))
+      const same = planSame ?? pool.find(e => isSameStep(e, s))
       if (same) {
-        if (s.status === 'done') doneRepeats.push(same.id)
-        else repeats.push(same.id)
-      } else {
-        fresh.push({ ...s, addedTurn: turn })
+        if (s.status === 'done') {
+          doneRepeats.push(same.id)
+        } else {
+          repeats.push(same.id)
+          if (planSame && (identifiersOf(s.text).length > identifiersOf(planSame.text).length || s.prompt.length > planSame.prompt.length)) {
+            promptUpdates.set(planSame.id, s.prompt)
+          }
+          if (s.children.length > 0) {
+            const cur = childAdditions.get(same.id) ?? []
+            childAdditions.set(same.id, [...cur, ...s.children.map(c => ({ ...c, addedTurn: turn }))])
+          }
+        }
+        continue
       }
+      if (planRoot && s.status !== 'done') {
+        const parent = findPlanParentFor(planRoot, s)
+        if (parent) {
+          const existingChild = parent.children.find(c => isSameGoal(c, s))
+          if (existingChild) {
+            repeats.push(existingChild.id)
+          } else {
+            const cur = childAdditions.get(parent.id) ?? []
+            if (!cur.some(c => isSameGoal(c, s))) {
+              childAdditions.set(parent.id, [...cur, { ...s, addedTurn: turn }])
+              repeats.push(parent.id)
+              added += 1
+            }
+          }
+          continue
+        }
+      }
+      fresh.push({ ...s, addedTurn: turn })
     }
     if (fresh.length === 0) continue
     added += fresh.length
@@ -985,6 +1056,18 @@ function mergeIncoming(
       list = [stream, ...list]
       touched.push(stream.id)
     }
+  }
+  if (promptUpdates.size > 0 || childAdditions.size > 0) {
+    list = mapAll(list, s => {
+      const newPrompt = promptUpdates.get(s.id)
+      const extraKids = (childAdditions.get(s.id) ?? []).filter(k => !s.children.some(c => isSameGoal(c, k)))
+      if (newPrompt === undefined && extraKids.length === 0) return s
+      return {
+        ...s,
+        ...(newPrompt !== undefined ? { prompt: newPrompt } : {}),
+        ...(extraKids.length > 0 ? { children: [...s.children, ...extraKids], isCollapsed: false } : {}),
+      }
+    })
   }
   if (doneRepeats.length > 0) {
     list = touchSteps(setStatus(list, doneRepeats, 'done'), doneRepeats, turn)
@@ -1401,25 +1484,28 @@ async function sweep($: EngineInterface, turn: number) {
   const cleared: string[] = []
   await changeRoots($, roots =>
     roots
-      .map(r =>
-        r.kind === 'todo'
-          ? r
-          : {
-              ...r,
-              steps: mapSteps(r.steps, s => {
-                if (s.status !== 'done') return s.doneTurn !== undefined ? { ...s, doneTurn: undefined } : s
-                // Done when last touched (ran, ticked, checked), else now.
-                const doneTurn = s.doneTurn ?? (lastTouch(s) >= 0 ? Math.min(turn, lastTouch(s)) : turn)
-                const isFinished = allSteps(s.children).every(c => c.status === 'done')
-                if (cfg.clearDoneAfter < 0 || !isFinished || awaitingCheck.has(s.id) || turn - doneTurn < cfg.clearDoneAfter) {
-                  return s.doneTurn === doneTurn ? s : { ...s, doneTurn }
-                }
-                recordDone(r.title, s.text)
-                cleared.push(plain(s.text).replace(/`/g, ''))
-                return undefined
-              }),
-            },
-      )
+      .map(r => {
+        if (r.kind === 'todo') return r
+        if (isPlanRoot(r)) {
+          for (const s of allSteps(r.steps)) if (s.status === 'done') recordDone(r.title, s.text)
+          return r
+        }
+        return {
+          ...r,
+          steps: mapSteps(r.steps, s => {
+            if (s.status !== 'done') return s.doneTurn !== undefined ? { ...s, doneTurn: undefined } : s
+            // Done when last touched (ran, ticked, checked), else now.
+            const doneTurn = s.doneTurn ?? (lastTouch(s) >= 0 ? Math.min(turn, lastTouch(s)) : turn)
+            const isFinished = allSteps(s.children).every(c => c.status === 'done')
+            if (cfg.clearDoneAfter < 0 || !isFinished || awaitingCheck.has(s.id) || turn - doneTurn < cfg.clearDoneAfter) {
+              return s.doneTurn === doneTurn ? s : { ...s, doneTurn }
+            }
+            recordDone(r.title, s.text)
+            cleared.push(plain(s.text).replace(/`/g, ''))
+            return undefined
+          }),
+        }
+      })
       .filter(r => r.steps.length > 0),
   )
   if (cleared.length > 0) {
@@ -1582,7 +1668,7 @@ function candidates(roots: Root[], turn: number): { root: Root; step: Step; inde
 }
 
 function localScore(
-  c: { root: Root; step: Step; index: number },
+  c: { root: Root; step: Step; index: number; parent?: Step },
   turn: number,
   latestAsked: Set<string>,
   latestReply: Set<string>,
@@ -1592,6 +1678,15 @@ function localScore(
   const stepAge = Math.max(0, ageOf(c.step, c.root, turn))
   const streamAge = c.root.kind === 'stream' && c.root.turn > 0 ? Math.max(0, turn - c.root.turn) : stepAge
   const reasons: [number, string][] = []
+  const inPlan = isPlanRoot(c.root)
+  const planIdx =
+    inPlan && c.parent === undefined
+      ? c.root.steps.filter(s => s.status === 'open' || s.status === 'failed').findIndex(s => s.id === c.step.id)
+      : -1
+  if (inPlan) {
+    if (planIdx === 0) reasons.push([3.5, 'next step in the plan'])
+    else if (planIdx === 1) reasons.push([1.5, 'up next in the plan'])
+  }
   if (c.step.status === 'failed') reasons.push([stepAge === 0 ? 5 : 3, "didn't get done last time"])
   if (rankCtx.testFailure !== '' && /\b(?:tests?|specs?|ci|build)\b/i.test(t) && /\b(?:fix|fail\w*|broken|red|pass\w*|green)\b/i.test(t)) {
     reasons.push([4, 'the last test run failed'])
@@ -1622,23 +1717,30 @@ function localScore(
     ])
   }
   if (/\brecommend/i.test(t)) reasons.push([streamAge === 0 ? 2 : 0.75, 'Claude recommended it'])
-  if (c.step.addedTurn !== undefined && c.step.addedTurn === turn) reasons.push([2.5, 'just suggested'])
-  if (c.index === 0) reasons.push([1, `first in Claude's list for ${plain(c.root.title)}`])
-  else if (c.index === 1) reasons.push([0.5, `next in ${plain(c.root.title)}`])
+  if ((c.step.addedTurn !== undefined && c.step.addedTurn === turn) || c.step.children.some(k => k.addedTurn === turn)) {
+    reasons.push([2.5, 'just suggested'])
+  }
+  if (!inPlan) {
+    if (c.index === 0) reasons.push([1, `first in Claude's list for ${plain(c.root.title)}`])
+    else if (c.index === 1) reasons.push([0.5, `next in ${plain(c.root.title)}`])
+  }
   if (c.root.kind === 'stream' && c.root.turn > 0 && streamAge === 0) reasons.push([2, 'the stream you are working in'])
   else if (c.root.kind === 'stream' && c.root.turn > 0 && streamAge === 1) reasons.push([0.5, 'the stream you are working in'])
   if (c.root.kind === 'todo') reasons.push([0.5, 'on the todo list'])
   let score = reasons.reduce((n, [w]) => n + w, 0)
+  if (inPlan && planIdx >= 2) score -= 2.5
   // Smooth recency decay so steps from earlier topics slide down as the conversation moves on.
-  score -= Math.min(5, stepAge * 1.25) + (streamAge >= 1 ? Math.min(3, streamAge) : 0)
+  if (!(inPlan && (planIdx === 0 || planIdx === 1))) {
+    score -= Math.min(5, stepAge * 1.25) + (streamAge >= 1 ? Math.min(3, streamAge) : 0)
+  }
   if (SOFT.test(t)) score -= 2
   if (c.root.kind === 'tool') score -= 1
   if (c.root.kind === 'likely') score -= 1.5
   if (c.step.isEarlier === true) score -= 2.5
-  if (c.root.kind === 'stream' && cfg.nudgeAfter > 0 && c.root.turn > 0 && turn - c.root.turn >= cfg.nudgeAfter) score -= 1
-  if (isStale(c.step, c.root, turn)) score -= 2
+  if (!inPlan && c.root.kind === 'stream' && cfg.nudgeAfter > 0 && c.root.turn > 0 && turn - c.root.turn >= cfg.nudgeAfter) score -= 1
+  if (!inPlan && isStale(c.step, c.root, turn)) score -= 2
   const best = reasons.sort((a, b) => b[0] - a[0])[0]
-  return { score, why: best ? best[1] : `next in ${plain(c.root.title)}` }
+  return { score, why: best ? best[1] : inPlan ? 'later in the plan' : `next in ${plain(c.root.title)}` }
 }
 
 /** Whether `a` sits above or below `b` in the tree (picking both would repeat work). */
@@ -2353,6 +2455,149 @@ async function carrySteps($: EngineInterface, path: string): Promise<string> {
   return `Carried over ${n} open step${n === 1 ? '' : 's'} from ${path}.`
 }
 
+const IS_PLAN_FILE = /(?:^|\/)(?:\.claude\/plans\/[^/]+|plan|roadmap|todo|next_steps|[-_a-z0-9]+[-_]plan|plan[-_][-a-z0-9]+)\.md$/i
+
+function planTitleFromSource(source: string): string {
+  const base = source.split('/').pop()?.replace(/\.md$/i, '') ?? ''
+  if (base === '' || /^(?:plan|next_steps|todo|roadmap)$/i.test(base)) return 'Plan'
+  return capital(base.replace(/[-_]+/g, ' ').trim())
+}
+
+/**
+ * Loads or updates the active plan root (`id: 'plan'`), consolidating any
+ * matching or tactical steps already in the tree into the plan so there is a
+ * single unified spine.
+ */
+async function syncPlan($: EngineInterface, md: string, source = 'Plan'): Promise<Root | undefined> {
+  const parsed = parsePlan(md, planTitleFromSource(source))
+  if (!parsed || parsed.steps.length === 0) return undefined
+  const turn = await read($, turnA)
+  const builtSteps = toSteps('reply', parsed.steps, 'plan', [], `plan:${source}`)
+  let synced: Root | undefined
+  const roots = await changeRoots($, current => {
+    const oldPlan = current.find(isPlanRoot)
+    const oldAll = current.flatMap(r => allSteps(r.steps))
+    const consumed = new Set<string>()
+    const mergeNode = (s: Step): Step => {
+      const match =
+        (oldPlan ? allSteps(oldPlan.steps).find(e => isSameGoal(s, e)) : undefined) ??
+        oldAll.find(e => !consumed.has(e.id) && isSameGoal(s, e))
+      if (match) consumed.add(match.id)
+      const kids = s.children.map(mergeNode)
+      const extraKids = (match?.children ?? []).filter(c => !kids.some(k => isSameGoal(k, c)))
+      const status: StepStatus = s.status === 'done' ? 'done' : match?.status === 'done' ? 'done' : (match?.status ?? s.status)
+      const prompt =
+        match && (identifiersOf(match.prompt).length > identifiersOf(s.prompt).length || match.prompt.length > s.prompt.length)
+          ? match.prompt
+          : s.prompt
+      return {
+        ...s,
+        id: match?.id ?? s.id,
+        status,
+        prompt,
+        touchedTurn: turn,
+        children: [...kids, ...extraKids],
+      }
+    }
+    let planSteps = builtSteps.map(mergeNode)
+    const tempPlan: Root = {
+      id: 'plan',
+      kind: 'stream',
+      title: parsed.title,
+      source: `plan:${source}`,
+      turn,
+      isCollapsed: false,
+      color: oldPlan?.color ?? pickColor(current),
+      steps: planSteps,
+    }
+    // Any remaining open step in another stream that is a tactical sub-step of an open plan item moves under it.
+    const adopted = new Map<string, Step[]>()
+    for (const r of current) {
+      if (isPlanRoot(r) || r.id === 'mine' || r.kind === 'todo') continue
+      for (const s of r.steps) {
+        if (consumed.has(s.id) || s.status === 'done') continue
+        const parent = findPlanParentFor(tempPlan, s)
+        if (parent && !parent.children.some(c => isSameGoal(c, s))) {
+          consumed.add(s.id)
+          adopted.set(parent.id, [...(adopted.get(parent.id) ?? []), s])
+        }
+      }
+    }
+    if (adopted.size > 0) {
+      planSteps = planSteps.map(s => {
+        const extra = adopted.get(s.id)
+        return extra ? { ...s, children: [...s.children, ...extra] } : s
+      })
+    }
+    const planRoot: Root = { ...tempPlan, steps: planSteps }
+    for (const s of allSteps(planSteps)) {
+      if (s.status === 'done') recordDone(planRoot.title, s.text)
+    }
+    synced = planRoot
+    const rest = current
+      .filter(r => !isPlanRoot(r))
+      .map(r => (r.id === 'mine' || r.kind === 'todo' ? r : { ...r, steps: mapSteps(r.steps, s => (consumed.has(s.id) ? undefined : s)) }))
+      .filter(r => r.steps.length > 0)
+    return capRoots([planRoot, ...rest])
+  })
+  if (cfg.ghostText) {
+    const top = ranking(roots, await read($, rankA), turn).top.find(t => isPrompt(t.step)) ?? topSteps(roots, 1)[0]
+    if (top) void $.prompt.suggest({ text: promptToSend(roots, top.step.id) ?? promptForStep(top.step) }).catch(() => undefined)
+  }
+  void maybeRank($)
+  return synced
+}
+
+/** Opens the pane focused on the active plan (or opens the full Up next pane if no plan exists yet). */
+async function openPlanPane($: EngineInterface) {
+  let roots = await read($, rootsA)
+  let plan = roots.find(isPlanRoot)
+  if (!plan) {
+    for (const candidate of ['PLAN.md', 'NEXT_STEPS.md', 'TODO.md']) {
+      const text = await $.fs.read(candidate).catch(() => '')
+      if (text.trim() !== '') {
+        plan = await syncPlan($, text, candidate)
+        if (plan) break
+      }
+    }
+    roots = await read($, rootsA)
+  }
+  if (plan) {
+    const planId = plan.id
+    await update($, rootsA, rs => rs.map(r => (r.id === planId ? { ...r, isCollapsed: false, isArchived: false } : r)))
+    await update($, filterA, cur => (cur === planId ? null : planId))
+    await update($, showAllA, () => true)
+  }
+  await update($, closedA, () => false)
+  if (herdr.pane !== '') await openViewer($, herdr.style)
+  else await $.ui.open({ id: PANE, title: TITLE })
+}
+
+async function planCommand($: EngineInterface, pathArg: string): Promise<string> {
+  const path = pathArg.trim()
+  if (path !== '') {
+    let text = ''
+    try {
+      text = await $.fs.read(path)
+    } catch {
+      return `Could not read ${path}.`
+    }
+    const plan = await syncPlan($, text, path)
+    if (!plan) return `No plan steps found in ${path}.`
+    await update($, filterA, () => null)
+    await openPlanPane($)
+    const total = allSteps(plan.steps).length
+    const open = allSteps(plan.steps).filter(isOpen).length
+    return `Loaded plan “${plain(plan.title)}” from ${path} (${open} open, ${total - open} done).`
+  }
+  await openPlanPane($)
+  const plan = (await read($, rootsA)).find(isPlanRoot)
+  if (!plan) return 'Opened the Up next pane (no active plan found).'
+  const total = allSteps(plan.steps).length
+  const open = allSteps(plan.steps).filter(isOpen).length
+  return `Showing plan “${plain(plan.title)}” (${open} open, ${total - open} done).`
+}
+
 async function draftIssues($: EngineInterface) {
   const roots = live(await read($, rootsA)).filter(r => r.kind !== 'likely')
   const list = roots
@@ -2468,8 +2713,8 @@ export const register: Register = (on, options) => {
     lastSavedDone = ''
     await $.command.register({
       name: 'upnext',
-      description: 'Show the Up next pane. Also: herdr, split, <stream> to show one stream, all, done, clear, export [file], carry [file], wrap [file], pr, issues [import]',
-      argumentHint: '[herdr | split | <stream> | all | done | clear | export [file] | carry [file] | wrap [file] | pr | issues [import]]',
+      description: 'Show the Up next pane. Also: plan [file], herdr, split, <stream> to show one stream, all, done, clear, export [file], carry [file], wrap [file], pr, issues [import]',
+      argumentHint: '[plan [file] | herdr | split | <stream> | all | done | clear | export [file] | carry [file] | wrap [file] | pr | issues [import]]',
     })
     herdr.inside = (await $.env.get('HERDR_PANE_ID').catch(() => undefined)) ?? ''
     herdr.pane = useHerdr ? herdr.inside : ''
@@ -2520,6 +2765,8 @@ export const register: Register = (on, options) => {
       case 'completed':
       case 'history':
         return { text: await listDoneSteps($) }
+      case 'plan':
+        return { text: await planCommand($, rest.join(' ')) }
       case 'export':
         return { text: await exportSteps($, rest.join(' ') || 'NEXT_STEPS.md') }
       case 'carry':
@@ -2859,9 +3106,38 @@ export const register: Register = (on, options) => {
       await setListRoot($, 'tasks', 'Tasks', steps)
       return r
     }).catch(($, e, next) => next(e))
+
+    on('tool.call', { tool: 'ExitPlanMode' }, async ($, e, next) => {
+      const r = await next(e)
+      if (e.agentId !== undefined || r.isError || r.deny !== undefined) return r
+      const planText = typeof (e as { plan?: unknown }).plan === 'string' ? String((e as { plan?: unknown }).plan) : typeof r.text === 'string' ? r.text : ''
+      if (planText.trim() !== '') await syncPlan($, planText, 'Plan')
+      return r
+    }).catch(($, e, next) => next(e))
+
+    on('tool.call', { tool: 'Write' }, async ($, e, next) => {
+      const r = await next(e)
+      if (e.agentId !== undefined || r.isError || r.deny !== undefined) return r
+      const filePath = String((e as { file_path?: unknown; path?: unknown }).file_path ?? (e as { path?: unknown }).path ?? '')
+      if (!IS_PLAN_FILE.test(filePath)) return r
+      const content = String((e as { content?: unknown }).content ?? '')
+      if (content.trim() !== '') await syncPlan($, content, filePath)
+      return r
+    }).catch(($, e, next) => next(e))
+
+    on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
+      const r = await next(e)
+      if (e.agentId !== undefined || r.isError || r.deny !== undefined) return r
+      const filePath = String((e as { file_path?: unknown; path?: unknown }).file_path ?? (e as { path?: unknown }).path ?? '')
+      if (!IS_PLAN_FILE.test(filePath)) return r
+      const full = await $.fs.read(filePath).catch(() => '')
+      const content = full.trim() !== '' ? full : String((e as { new_string?: unknown }).new_string ?? '')
+      if (content.trim() !== '') await syncPlan($, content, filePath)
+      return r
+    }).catch(($, e, next) => next(e))
   }
 
-  // ---- The row above the prompt: 1/2/3 drafts a step, 0 hides ----------------
+  // ---- The row above the prompt: 1/2/3 drafts a step, p opens plan, 0 hides ----
 
   if (showBand) {
     on('ui.render', { component: 'AbovePrompt' }, async ($, e, next): Promise<RenderElement> => {
@@ -2901,7 +3177,7 @@ export const register: Register = (on, options) => {
                     ? { glyph: '?', color: 'warning' }
                     : STATUS_MARK[step.status]
               const tag = clipTo(plain(root.title).replace(/`/g, ''), 14)
-              const hide = i === 0 ? 9 : 0
+              const hide = i === 0 ? 15 : 0
               const kids = step.children.filter(isOpen).length
               const kidsW = kids > 0 ? ` +${kids}`.length : 0
               const reason = why !== '' ? why : step.forYou === 'decide' ? 'yours to decide' : step.forYou === 'check' ? 'yours to try' : ''
@@ -2920,6 +3196,12 @@ export const register: Register = (on, options) => {
                   <Text dimColor>{tag}</Text>
                   {i === 0 && <Text>{'  '}</Text>}
                   {i === 0 && (
+                    <Button key="plan-open" plain dimColor hotkey="p" onPress={() => void openPlanPane($)}>
+                      plan
+                    </Button>
+                  )}
+                  {i === 0 && <Text>{'  '}</Text>}
+                  {i === 0 && (
                     <Button key="b:hide" plain dimColor hotkey="0" onPress={() => void update($, bandHiddenA, () => turn)}>
                       hide
                     </Button>
@@ -2933,7 +3215,7 @@ export const register: Register = (on, options) => {
       const ranked = ranking(bandRoots, await read($, rankA), turn).top.slice(0, BAND_ITEMS)
       const top = ranked.length > 0 ? ranked : topSteps(treeOf(bandRoots, turn), BAND_ITEMS, true)
       if (top.length === 0) return below
-      const room = Math.min(36, Math.max(12, Math.floor((e.props.bodyColumns - 14) / top.length) - 7))
+      const room = Math.min(36, Math.max(12, Math.floor((e.props.bodyColumns - 20) / top.length) - 7))
       const label = (s: Step) => {
         const raw = plain(s.text).replace(/`/g, '').trim()
         const cut = raw.replace(/\s+(?:—|--|so that\b|because\b|in order to\b|to ensure\b|which will\b).*$/i, '').trim()
@@ -2951,6 +3233,9 @@ export const register: Register = (on, options) => {
                 <Text>{label(step)}</Text>
               </Button>
             ))}
+            <Button key="plan-open" plain dimColor hotkey="p" onPress={() => void openPlanPane($)}>
+              plan
+            </Button>
             <Button key="b:hide" plain dimColor hotkey="0" onPress={() => void update($, bandHiddenA, () => turn)}>
               hide
             </Button>
@@ -3013,6 +3298,9 @@ export const register: Register = (on, options) => {
     const alt = cfg.sendOnClick ? { glyph: '✐', color: 'suggestion' } : { glyph: '▶', color: 'success' }
 
     const rule = <Text dimColor>{'─'.repeat(cols)}</Text>
+    const planRoot = roots.find(r => isPlanRoot(r) && r.isArchived !== true)
+    const planAllSteps = planRoot ? allSteps(planRoot.steps) : []
+    const planDoneCount = planAllSteps.filter(s => s.status === 'done').length
 
     const header = (
       <Box flexDirection="column">
@@ -3046,10 +3334,24 @@ export const register: Register = (on, options) => {
         {focus && (
           <Box key="focus" flexDirection="row">
             <Text color={colorOf(focus)}>◎ </Text>
-            <Text>only {plain(focus.title).slice(0, Math.max(8, cols - 24))}</Text>
+            <Text>
+              {isPlanRoot(focus)
+                ? `Plan: ${plain(focus.title).slice(0, Math.max(8, cols - 34))} (${planDoneCount}/${planAllSteps.length} done)`
+                : `only ${plain(focus.title).slice(0, Math.max(8, cols - 24))}`}
+            </Text>
             <Box flexGrow={1} />
             <Button key="focus-all" plain hotkey="a" dimColor hover={{ color: 'claude' }} onPress={() => void update($, filterA, () => null)}>
               Show all
+            </Button>
+          </Box>
+        )}
+        {!focus && planRoot && (
+          <Box key="plan-bar" flexDirection="row">
+            <Text color={colorOf(planRoot)}>◎ </Text>
+            <Text dimColor>{`plan: ${plain(planRoot.title).slice(0, Math.max(8, cols - 34))} (${planDoneCount}/${planAllSteps.length} done)`}</Text>
+            <Box flexGrow={1} />
+            <Button key="focus-plan" plain hotkey="v" dimColor hover={{ color: 'claude' }} onPress={() => void update($, filterA, () => planRoot.id)}>
+              Plan view
             </Button>
           </Box>
         )}
@@ -3338,18 +3640,29 @@ export const register: Register = (on, options) => {
 
     const rootBlock = (root: Root, index: number) => {
       const kind = { glyph: KIND[root.kind].glyph, color: colorOf(root) }
+      const totalInRoot = allSteps(root.steps).length
       const left = allSteps(root.steps).filter(isOpen).length
       const forAgents = agentSteps(root).length
       const inOrder = orderSteps(root).length
       const canAdd = root.kind !== 'tool' && root.kind !== 'likely'
       const isEarlier = root.steps.length > 0 && allSteps(root.steps).every(s => s.isEarlier === true)
       const meta =
-        root.kind === 'todo' ? '' : isEarlier ? ' · earlier' : root.turn > 0 ? ` · turn ${root.turn}` : root.kind === 'likely' ? ' · a guess' : ' · earlier'
+        root.kind === 'todo'
+          ? ''
+          : isPlanRoot(root)
+            ? ` · plan (${totalInRoot - left}/${totalInRoot} done)`
+            : isEarlier
+              ? ' · earlier'
+              : root.turn > 0
+                ? ` · turn ${root.turn}`
+                : root.kind === 'likely'
+                  ? ' · a guess'
+                  : ' · earlier'
       const titleW = cols - 4 - widthOf(meta) - 6 - (root.kind === 'stream' ? (focus ? 4 : 6) : 0) - (canAdd ? 2 : 0) - (inOrder > 1 ? 3 : 0) - (forAgents > 1 ? 2 : 0) - 4
       const title = widthOf(root.title) > titleW ? root.title.slice(0, Math.max(4, titleW - 1)) + '…' : root.title
       const canSendAll = left > 0 && root.kind !== 'likely'
       y += (index === 0 ? 0 : 1) + 1
-      const showSource = root.source !== undefined && !root.isCollapsed
+      const showSource = root.source !== undefined && !isPlanRoot(root) && !root.isCollapsed
       if (showSource) y += 1
       if (editing === root.id) {
         const others = streams.filter(t => t.id !== root.id).slice(0, 4)
