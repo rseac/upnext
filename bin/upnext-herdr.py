@@ -246,6 +246,7 @@ class Viewer:
         self.marked = []  # step ids, in the order marked
         self.show_all = None  # "everything else" under the ranked steps; None: shown while short
         self.show_old = False
+        self.show_completed = False
         self.numbered = []  # step ids by number (1-based), open steps in view order
         self.done = False
         self.g = ASCII if ascii_only else FANCY
@@ -467,6 +468,18 @@ class Viewer:
                         line.add(" ")
                         line.add(g["drop"], ("dismiss", sid), dim=True, hot=167)
                     lines.append(line)
+        completed = self.state.get("completed", [])
+        if completed:
+            lines.append(Line())
+            lines.append(Line().add(f" {g['unfolded'] if self.show_completed else g['folded']} completed · {len(completed)}", ("completed", ""), dim=True))
+            if self.show_completed:
+                for c in completed:
+                    line = Line()
+                    line.add("   ")
+                    line.add(g["done"] + " ", fg=STATUS_COLOR["done"])
+                    label = f"{safe(c.get('stream', ''))}: {safe(c.get('text', ''))}"
+                    line.add(clip(label, max(8, cols - 8), g["more"]), dim=True)
+                    lines.append(line)
         older = self.state.get("older", [])
         if older:
             lines.append(Line())
@@ -611,6 +624,8 @@ class Viewer:
             self.folded.symmetric_difference_update({target})
         elif verb == "older":
             self.show_old = not self.show_old
+        elif verb == "completed":
+            self.show_completed = not self.show_completed
         elif verb == "restore":
             self.act("restore", target, "restored to the top")
         elif verb == "all":

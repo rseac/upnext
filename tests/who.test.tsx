@@ -49,7 +49,7 @@ const ANSWER = '## Next steps\n- Try the new pane\n- Pick a license (MIT if unsu
 const row = async (ui: { findAll: (q: { type?: string }) => Promise<Found[]> }, re: RegExp) =>
   (await ui.findAll({ type: 'Button' })).find(b => b.key?.startsWith('run:') && re.test(b.text ?? ''))!
 
-test('a step for you to try ticks off on click; a decision starts your answer', async ($, on) => {
+test('clicking a check step drafts it instead of silently deleting it; a decision starts your answer', async ($, on) => {
   const { drafted, sent } = engine(on)
   await $.session.start({ cwd: '/w1', surface: 'terminal', isInteractive: true })
   await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
@@ -59,11 +59,10 @@ test('a step for you to try ticks off on click; a decision starts your answer', 
   expect((await row(ui, /integration tests/)).text?.charAt(0)).toBe('○')
 
   await ui.press({ key: (await row(ui, /Try the new pane/)).key! })
-  expect((await row(ui, /Try the new pane/)).text?.charAt(0)).toBe('✓')
-  expect(drafted).toEqual([])
+  expect(drafted).toEqual(['Try the new pane'])
 
   await ui.press({ key: (await row(ui, /Pick a license/)).key! })
-  expect(drafted).toEqual(['Pick a license (MIT if unsure): '])
+  expect(drafted).toEqual(['Try the new pane', 'Pick a license (MIT if unsure): '])
   expect(sent).toEqual([])
   // Your steps have no send button.
   const alts = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('alt:')).length

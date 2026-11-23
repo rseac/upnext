@@ -190,6 +190,10 @@ test('tidy and clear-done actions from the herdr viewer reach the mod', { option
   expect(files['/home/t/.claude/upnext/herdr/w1-p1.json']).toContain('"status":"done"')
   actions.push('{"seq":2,"verb":"clear-done","id":""}\n')
   await $.turn.complete({ ...TURN, answer: 'ok', turnId: 't3' })
-  for (let i = 0; i < 100 && files['/home/t/.claude/upnext/herdr/w1-p1.json']!.includes('Rotate the signing key'); i++) await tick()
-  expect(files['/home/t/.claude/upnext/herdr/w1-p1.json']).not.toContain('Rotate the signing key')
+  for (let i = 0; i < 100 && JSON.stringify(JSON.parse(files['/home/t/.claude/upnext/herdr/w1-p1.json']!).roots).includes('Rotate the signing key'); i++) {
+    await tick()
+  }
+  const state = JSON.parse(files['/home/t/.claude/upnext/herdr/w1-p1.json']!) as { roots: unknown; completed: unknown }
+  expect(JSON.stringify(state.roots)).not.toContain('Rotate the signing key')
+  expect(JSON.stringify(state.completed)).toContain('Rotate the signing key')
 })

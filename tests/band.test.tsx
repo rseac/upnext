@@ -47,21 +47,26 @@ test('three lines above the prompt: the top steps with why; the pane does not op
   expect(texts.some(t => t.includes('· fixes something broken'))).toBe(true)
   expect((await band.findAll({ type: 'Button', text: /hide/ })).length).toBe(1)
 
-  // A number on a step for you to try ticks it off: it leaves the top three, the next moves up.
+  // Selecting a number drafts the step into the prompt box instead of silently deleting it.
   const check = rows.find(r => r.text?.startsWith('☐'))!
   await band.press({ key: check.key! })
   const after = (await band.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('b:') && b.key !== 'b:hide').map(b => b.text)
-  expect(after).not.toContain('☐ Try the new pane')
-  expect(after).toContain('○ Tidy the README')
+  expect(after).toContain('☐ Try the new pane')
   await band.unmount()
 })
 
-test('bandStyle "row" keeps the single line', { options: { bandStyle: 'row' } }, async ($, on) => {
+test('bandStyle "row" keeps the single line and trims trailing explanation clauses', { options: { bandStyle: 'row' } }, async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/b2', surface: 'terminal', isInteractive: true })
-  await $.turn.complete({ ...TURN, answer: ANSWER, turnId: 't1' })
+  await $.turn.complete({
+    ...TURN,
+    answer: '## Next steps\n- Run the full test suite — verifies that the parser handles edge cases cleanly\n- Try the new pane',
+    turnId: 't1',
+  })
   const band = await $.ui.mount(BAND as never)
   expect((await band.findAll({ type: 'Text', text: /✦ next/ })).length).toBe(1)
+  const rows = (await band.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('b:') && b.key !== 'b:hide')
+  expect(rows.map(r => r.text)).toEqual(['● Run the full test suite', '● Try the new pane'])
   await band.unmount()
 })
 

@@ -45,6 +45,7 @@ const rankA = atom({ plugin: 'upnext', key: 'rank' } as const, null as Ranking |
 const rankingA = atom({ plugin: 'upnext', key: 'isRanking' } as const, false)
 const showAllA = atom({ plugin: 'upnext', key: 'showAll' } as const, null as boolean | null)
 const showOldA = atom({ plugin: 'upnext', key: 'showOld' } as const, false)
+const showDoneA = atom({ plugin: 'upnext', key: 'showDone' } as const, false)
 const confirmClearA = atom({ plugin: 'upnext', key: 'confirmClear' } as const, false)
 
 // Options, set by register (it runs again on every reload), and the project.
@@ -323,14 +324,14 @@ function identifiersOf(text: string): string[] {
 /** The open steps a prompt the person typed is about, even when paraphrased or short. */
 function matchTyped(roots: Root[], text: string, order: Step[] = []): Step[] {
   const trimmed = text.trim()
-  const actionableOrder = order.filter(s => (s.status === 'open' || s.status === 'failed') && s.forYou !== 'check')
+  const actionableOrder = order.filter(s => s.status === 'open' || s.status === 'failed')
   const nums = BY_NUMBERS.exec(trimmed)
   if (nums) {
     const picked = [
       ...new Set(
         [...nums[1]!.matchAll(/[1-9]/g)]
           .map(m => order[Number(m[0]) - 1])
-          .filter((s): s is Step => s !== undefined && s.forYou !== 'check'),
+          .filter((s): s is Step => s !== undefined),
       ),
     ]
     if (picked.length > 0) return picked
@@ -339,7 +340,7 @@ function matchTyped(roots: Root[], text: string, order: Step[] = []): Step[] {
   if (ord) {
     const idx = /^f|^1/i.test(ord[1]!) ? 0 : /^s|^2/i.test(ord[1]!) ? 1 : 2
     const hit = order[idx]
-    if (hit && hit.forYou !== 'check') return [hit]
+    if (hit) return [hit]
   }
   if (BY_BOTH.test(trimmed) && actionableOrder.length >= 1) return actionableOrder.slice(0, 2)
   if (BY_ALL.test(trimmed) && actionableOrder.length >= 1) return actionableOrder.slice(0, 5)
@@ -567,6 +568,7 @@ async function modelPass($: EngineInterface, job: Job) {
 
 /** Steps are kept per session: a resumed session gets its own back, a new one starts empty. */
 const storeKey = () => `roots:session:${cfg.sessionId}`
+const doneStoreKey = () => `done:session:${cfg.sessionId}`
 const persists = () => cfg.keep && cfg.sessionId !== ''
 
 /** What is kept for the next session: open steps of reply groups, reset to open. */
@@ -611,6 +613,7 @@ function isRoots(v: unknown): v is Root[] {
 // The last copy written, so a change the saved copy does not keep (a step
 // queued, then running) costs no write.
 let lastSaved = ''
+let lastSavedDone = ''
 
 async function changeRoots($: EngineInterface, fn: (roots: Root[]) => Root[]): Promise<Root[]> {
   const roots = await update($, rootsA, fn)
@@ -627,13 +630,31 @@ async function changeRoots($: EngineInterface, fn: (roots: Root[]) => Root[]): P
         lastSaved = ''
       })
     }
+    if (rankCtx.doneLog.length > 0) {
+      const dKey = `${doneStoreKey()}\n${JSON.stringify(rankCtx.doneLog)}`
+      if (dKey !== lastSavedDone) {
+        lastSavedDone = dKey
+        await $.store.set(doneStoreKey(), rankCtx.doneLog).catch(() => {
+          lastSavedDone = ''
+        })
+      }
+    }
   }
   await herdrSync($, roots)
   return roots
 }
 
 async function restore($: EngineInterface) {
-  if (!persists() || (await read($, rootsA)).length > 0) return
+  if (!persists()) return
+  if (rankCtx.doneLog.length === 0) {
+    const savedDone = await $.store.get(doneStoreKey()).catch(() => undefined)
+    if (Array.isArray(savedDone)) {
+      rankCtx.doneLog = savedDone
+        .filter((d): d is { stream: string; text: string } => typeof d?.stream === 'string' && typeof d?.text === 'string')
+        .slice(-50)
+    }
+  }
+  if ((await read($, rootsA)).length > 0) return
   const saved = await $.store.get(storeKey()).catch(() => undefined)
   if (!isRoots(saved) || saved.length === 0) return
   await changeRoots($, () =>
@@ -698,23 +719,16 @@ async function actOnStep($: EngineInterface, id: string, how: 'send' | 'draft') 
   const roots = await read($, rootsA)
   const hit = find(roots, id)
   if (!hit) return
-  if (hit.step.forYou === 'check') {
-    // Yours to try or check: a click ticks it off (or back on).
-    const turn = await read($, turnA)
-    const status: StepStatus = hit.step.status === 'done' ? 'open' : 'done'
-    await changeRoots($, rs => mapAll(rs, s => (s.id === id ? { ...s, status, touchedTurn: turn } : s)))
-    return
-  }
-  if (hit.step.forYou === 'decide') {
+  if (hit.step.forYou === 'decide' && how === 'draft') {
     // Yours to decide: start the answer in the prompt box; sending it ticks the step.
     await draft($, [hit.step.id], `${plain(hit.step.text).replace(/[.?!:]+$/, '')}: `)
     return
   }
-  const treeIds = [hit.step, ...allSteps(hit.step.children)].filter(isPrompt).map(s => s.id)
+  const treeIds = [hit.step, ...allSteps(hit.step.children)].map(s => s.id)
   if (hit.step.status === 'done') {
     await changeRoots($, rs => mapAll(rs, s => (treeIds.includes(s.id) ? { ...s, status: 'open', doneTurn: undefined } : s)))
   }
-  const ids = openIds([hit.step, ...allSteps(hit.step.children)].filter(isPrompt))
+  const ids = openIds([hit.step, ...allSteps(hit.step.children)])
   const stepIds = ids.length > 0 ? ids : treeIds.length > 0 ? treeIds : [hit.step.id]
   const prompt = promptToSend(roots, id) ?? promptForStep(hit.step)
   if (how === 'send' && hit.root.kind !== 'tool') await send($, stepIds, prompt)
@@ -912,7 +926,6 @@ const isPinnedStep = (s: Step, r: Root, marked: string[]) =>
   r.id === 'mine' ||
   r.kind === 'todo' ||
   s.origin === 'mine' ||
-  s.isEarlier === true ||
   s.status === 'running' ||
   s.status === 'queued' ||
   s.agentId !== undefined ||
@@ -993,6 +1006,7 @@ function mergeIncoming(
                 if (s.addedTurn === turn || repeats.includes(s.id) || doneRepeats.includes(s.id) || s.status === 'done' || isPinnedStep(s, r, marked)) {
                   return s
                 }
+                recordDone(r.title, s.text)
                 replaced += 1
                 return undefined
               }),
@@ -1334,13 +1348,17 @@ const listStep = (id: string, text: string, status: StepStatus): Step | undefine
 
 // ---- Age: newest first, fading, "older", and done steps leaving ------------------
 
-/** The last turn a step arrived or was touched; -1 when it carries neither. */
-const lastTouch = (s: Step) => Math.max(s.touchedTurn ?? -1, s.addedTurn ?? -1)
+/** The last turn a step arrived or was touched; -1 when it carries neither or comes from an earlier session run. */
+const lastTouch = (s: Step, turn = Infinity) => {
+  if (s.isEarlier === true && (s.touchedTurn === undefined || s.touchedTurn > turn)) return -1
+  const t = Math.max(s.touchedTurn ?? -1, s.addedTurn ?? -1)
+  return t > turn ? -1 : t
+}
 
 /** Turns since the step arrived or was last touched (run, edited, moved, suggested again). */
 function ageOf(s: Step, root: Root, turn: number): number {
-  const t = lastTouch(s)
-  return turn - (t >= 0 ? t : root.turn)
+  const t = lastTouch(s, turn)
+  return turn - (t >= 0 ? t : root.turn > turn ? 0 : root.turn)
 }
 
 /** Whether age applies: not to the todo list (Claude keeps that), nor to work in flight. */
@@ -1352,17 +1370,17 @@ const isStale = (s: Step, root: Root, turn: number) =>
   cfg.fadeAfter > 0 && ages(s, root) && !isOld(s, root, turn) && ageOf(s, root, turn) >= cfg.fadeAfter
 
 /** Top-level steps newest first; steps from one reply keep the order Claude gave them. */
-const newestFirst = (steps: Step[]): Step[] =>
+const newestFirst = (steps: Step[], turn = Infinity): Step[] =>
   steps
     .map((s, i) => ({ s, i }))
-    .sort((a, b) => lastTouch(b.s) - lastTouch(a.s) || a.i - b.i)
+    .sort((a, b) => lastTouch(b.s, turn) - lastTouch(a.s, turn) || a.i - b.i)
     .map(x => x.s)
 
 /** The tree as shown: newest first, without old steps (they wait under "older"). */
 function treeOf(roots: Root[], turn: number): Root[] {
-  const recency = (r: Root) => Math.max(r.turn, ...r.steps.map(lastTouch))
+  const recency = (r: Root) => Math.max(r.turn > turn ? 0 : r.turn, ...r.steps.map(s => lastTouch(s, turn)))
   return live(roots)
-    .map((r, i) => ({ r: r.kind === 'todo' ? r : { ...r, steps: newestFirst(r.steps).filter(s => !isOld(s, r, turn)) }, i, at: recency(r) }))
+    .map((r, i) => ({ r: r.kind === 'todo' ? r : { ...r, steps: newestFirst(r.steps, turn).filter(s => !isOld(s, r, turn)) }, i, at: recency(r) }))
     .filter(x => x.r.steps.length > 0)
     .sort((a, b) => b.at - a.at || a.i - b.i)
     .map(x => x.r)
@@ -1736,21 +1754,10 @@ async function modelRank($: EngineInterface, isAsked: boolean) {
       ids.push(c.step.id)
       why[c.step.id] = typeof t.why === 'string' ? clean(t.why, 90) : ''
     }
-    // Haiku's view of who does what corrects the word rules, except where you set it yourself.
-    const yours = new Set(
-      (Array.isArray(data.forYou) ? data.forYou : []).flatMap(n => (typeof n === 'number' && open[n - 1] ? [open[n - 1]!.step.id] : [])),
-    )
     const seenIds = open.map(c => c.step.id).filter(id => !drop.has(id))
-    await changeRoots($, rs =>
-      mapAll(rs, s => {
-        if (drop.has(s.id)) return undefined
-        if (!seenIds.includes(s.id) || s.isForYouSet === true) return s
-        if (yours.has(s.id)) return s.forYou !== undefined ? s : { ...s, forYou: forYouOf(s.text) ?? 'check' }
-        if (s.forYou === undefined) return s
-        const { forYou: _f, ...rest } = s
-        return rest
-      }),
-    )
+    if (drop.size > 0) {
+      await changeRoots($, rs => mapAll(rs, s => (drop.has(s.id) ? undefined : s)))
+    }
     if (ids.length === 0) return
     const turn = await read($, turnA)
     await update($, rankA, () => ({ ids: ids.slice(0, RANK_N), why, seen: seenIds, turn }))
@@ -2090,6 +2097,7 @@ async function herdrSync($: EngineInterface, roots: Root[]) {
       color: colorOf(o.root),
       age: o.age,
     })),
+    completed: [...rankCtx.doneLog].reverse(),
   }
   const text = JSON.stringify(state)
   if (text !== herdr.lastState) {
@@ -2303,11 +2311,26 @@ async function viewerAction($: EngineInterface, verb: string, id: string) {
 
 async function exportSteps($: EngineInterface, path: string): Promise<string> {
   const roots = await read($, rootsA)
-  if (roots.length === 0) return 'There are no steps to export.'
-  const body = roots.map(r => `## ${plain(r.title)}${r.isArchived ? ' (archived)' : ''}\n\n${bullets(r.steps, 0, true)}`).join('\n\n')
-  await $.fs.write(path, `# Next steps\n\n${body}\n`)
-  const n = roots.flatMap(r => allSteps(r.steps)).length
+  if (roots.length === 0 && rankCtx.doneLog.length === 0) return 'There are no steps to export.'
+  const inTreeKeys = new Set(roots.flatMap(r => allSteps(r.steps)).map(s => keyOf(s.text)))
+  const extraDone = rankCtx.doneLog.filter(d => !inTreeKeys.has(keyOf(d.text)))
+  const blocks = roots.map(r => `## ${plain(r.title)}${r.isArchived ? ' (archived)' : ''}\n\n${bullets(r.steps, 0, true)}`)
+  if (extraDone.length > 0) {
+    blocks.push(`## Completed\n\n${extraDone.map(d => `- [x] [${d.stream}] ${d.text}`).join('\n')}`)
+  }
+  await $.fs.write(path, `# Next steps\n\n${blocks.join('\n\n')}\n`)
+  const n = roots.flatMap(r => allSteps(r.steps)).length + extraDone.length
   return `Wrote ${n} step${n === 1 ? '' : 's'} to ${path}.`
+}
+
+async function listDoneSteps($: EngineInterface): Promise<string> {
+  const roots = await read($, rootsA)
+  const items = [
+    ...rankCtx.doneLog.map(d => `- [x] [${d.stream}] ${d.text}`),
+    ...roots.flatMap(r => allSteps(r.steps).filter(s => s.status === 'done').map(s => `- [x] [${plain(r.title)}] ${plain(s.text)}`)),
+  ]
+  const unique = [...new Set(items)]
+  return unique.length === 0 ? 'No completed steps recorded in this session yet.' : `Completed steps (${unique.length}):\n${unique.join('\n')}`
 }
 
 async function carrySteps($: EngineInterface, path: string): Promise<string> {
@@ -2440,10 +2463,13 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     cfg.keep = keepAcrossSessions
     cfg.sessionId = await $.session.id().catch(() => '')
+    rankCtx.doneLog = []
+    lastSaved = ''
+    lastSavedDone = ''
     await $.command.register({
       name: 'upnext',
-      description: 'Show the Up next pane. Also: herdr, split, <stream> to show one stream, all, clear, export [file], carry [file], wrap [file], pr, issues [import]',
-      argumentHint: '[herdr | split | <stream> | all | clear | export [file] | carry [file] | wrap [file] | pr | issues [import]]',
+      description: 'Show the Up next pane. Also: herdr, split, <stream> to show one stream, all, done, clear, export [file], carry [file], wrap [file], pr, issues [import]',
+      argumentHint: '[herdr | split | <stream> | all | done | clear | export [file] | carry [file] | wrap [file] | pr | issues [import]]',
     })
     herdr.inside = (await $.env.get('HERDR_PANE_ID').catch(() => undefined)) ?? ''
     herdr.pane = useHerdr ? herdr.inside : ''
@@ -2490,6 +2516,10 @@ export const register: Register = (on, options) => {
       case 'clear':
         await clearAll($)
         return { text: 'Cleared the Up next pane.' }
+      case 'done':
+      case 'completed':
+      case 'history':
+        return { text: await listDoneSteps($) }
       case 'export':
         return { text: await exportSteps($, rest.join(' ') || 'NEXT_STEPS.md') }
       case 'carry':
@@ -2589,6 +2619,30 @@ export const register: Register = (on, options) => {
 
   on('ui.close', async ($, e, next) => {
     if (e.id === PANE && e.origin.kind === 'person') await update($, closedA, () => true)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // When the user types a number or ordinal ("1", "do 2", "1 and 3", "the first one", "do both")
+  // and presses Enter, expand it into the actual step prompt(s) before Claude sees it.
+  on('prompt.submit', async ($, e, next) => {
+    const trimmed = typeof e.text === 'string' ? e.text.trim() : ''
+    if (
+      trimmed !== '' &&
+      (BY_NUMBERS.test(trimmed) || BY_ORDINAL.test(trimmed) || BY_BOTH.test(trimmed) || BY_ALL.test(trimmed))
+    ) {
+      const roots = await read($, rootsA)
+      const order = await paneOrder($)
+      const matched = matchTyped(roots, trimmed, order)
+      if (matched.length > 0) {
+        const prompts = matched.map(s => promptToSend(roots, s.id) ?? promptForStep(s))
+        const rewritten = prompts.length === 1 ? prompts[0]! : `Please work through these steps, in order:\n${prompts.map((p, i) => `${i + 1}. ${p}`).join('\n')}`
+        const ids = matched.flatMap(step => openIds([step, ...allSteps(step.children)]))
+        if (ids.length > 0) {
+          await update($, inflightA, list => [...list, { stepIds: ids, prompt: rewritten }].slice(-20))
+        }
+        return next({ ...e, text: rewritten })
+      }
+    }
     return next(e)
   }).catch(($, e, next) => next(e))
 
@@ -2876,14 +2930,14 @@ export const register: Register = (on, options) => {
           </Box>
         )
       }
-      const ranked = ranking(bandRoots, await read($, rankA), turn)
-        .top.filter(t => bandList || isPrompt(t.step))
-        .slice(0, BAND_ITEMS)
-      const top = ranked.length > 0 ? ranked : topSteps(treeOf(bandRoots, turn), BAND_ITEMS)
+      const ranked = ranking(bandRoots, await read($, rankA), turn).top.slice(0, BAND_ITEMS)
+      const top = ranked.length > 0 ? ranked : topSteps(treeOf(bandRoots, turn), BAND_ITEMS, true)
       if (top.length === 0) return below
-      const room = Math.max(12, Math.floor((e.props.bodyColumns - 14) / top.length) - 7)
+      const room = Math.min(36, Math.max(12, Math.floor((e.props.bodyColumns - 14) / top.length) - 7))
       const label = (s: Step) => {
-        const t = plain(s.text).replace(/`/g, '')
+        const raw = plain(s.text).replace(/`/g, '').trim()
+        const cut = raw.replace(/\s+(?:—|--|so that\b|because\b|in order to\b|to ensure\b|which will\b).*$/i, '').trim()
+        const t = cut.length >= 10 ? cut : raw
         return widthOf(t) > room ? `${[...t].slice(0, room - 1).join('')}…` : t
       }
       return (
@@ -2925,6 +2979,7 @@ export const register: Register = (on, options) => {
     const shown = focus ? tree.filter(r => r.id === focus.id) : tree
     const older = olderSteps(roots, turnNow)
     const showOld = await read($, showOldA)
+    const showDone = await read($, showDoneA)
     const confirmClear = await read($, confirmClearA)
     const streams = live(roots).filter(r => r.kind === 'stream')
     const rank = await read($, rankA)
@@ -3065,6 +3120,26 @@ export const register: Register = (on, options) => {
         </Box>
       )
 
+    const doneBlock =
+      rankCtx.doneLog.length === 0 || focus ? null : (
+        <Box key="completed" flexDirection="column" marginTop={1}>
+          <Button key="done-tg" plain dimColor onPress={() => void update($, showDoneA, v => !v)}>
+            {`${showDone ? '▾' : '▸'} Completed · ${rankCtx.doneLog.length}`}
+          </Button>
+          {showDone &&
+            [...rankCtx.doneLog].reverse().map((d, idx) => {
+              const label = `${d.stream}: ${d.text}`
+              const room = Math.max(10, cols - 8)
+              return (
+                <Box key={`dl:${idx}`} flexDirection="row">
+                  <Text color="success">{'  '}✓ </Text>
+                  <Text dimColor>{widthOf(label) > room ? `${[...label].slice(0, room - 1).join('')}…` : label}</Text>
+                </Box>
+              )
+            })}
+        </Box>
+      )
+
     if (shown.length === 0) {
       return (
         <Box flexDirection="column">
@@ -3076,6 +3151,7 @@ export const register: Register = (on, options) => {
             <Text dimColor>offers to do more, they land here.</Text>
           </Box>
           {addMine}
+          {doneBlock}
           {olderBlock}
           {archivedBlock}
         </Box>
@@ -3539,6 +3615,7 @@ export const register: Register = (on, options) => {
           {addMine}
           <Text dimColor>{hint}</Text>
         </Box>
+        {doneBlock}
         {olderBlock}
         {archivedBlock}
         {cards}

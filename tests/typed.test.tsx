@@ -32,6 +32,7 @@ function engine(on: On, judge: string[] = []) {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('turn.complete', () => ({ text: '' }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
   on('prompt.suggest', () => ({ isShown: true }))
   on('store.set', () => ({ value: undefined }))
   on('store.get', () => ({ value: undefined }))
@@ -69,7 +70,9 @@ test('"do 2" means step 2 in the pane', async ($, on) => {
   const second = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('n:'))[1]!
   const id = second.key!.slice(2)
   const target = (await ui.findAll({ type: 'Button' })).find(b => b.key === `top:${id}`)!.text!.replace(/^\S+ /, '')
-  await $.turn.start({ text: 'do 2', turnId: 't2' } as never)
+  const submitted = await $.prompt.submit({ text: '2', asUser: true })
+  expect((submitted as { text?: string }).text).toBe(target)
+  await $.turn.start({ text: (submitted as { text?: string }).text ?? 'do 2', turnId: 't2' } as never)
   await $.turn.complete({ ...TURN, answer: 'Done: that is finished now.', turnId: 't2' })
   expect(await texts(ui)).not.toContain(target)
   expect((await texts(ui)).length).toBe(2)
@@ -206,5 +209,17 @@ test('prompt.section hands Claude the open list, and the next reply replaces unp
   expect(openNow).toContain('Pin my release checklist')
   expect(openNow).toContain('#42 Fix token refresh race')
   expect(openNow).not.toContain('Rotate the signing key')
+
+  // Omitted/completed step is preserved in Completed (Pane + /upnext done) for review after the fact.
+  expect((await ui.findAll({ type: 'Button', text: /Completed · 1/ })).length).toBe(1)
+  await ui.press({ key: 'done-tg' })
+  expect((await ui.findAll({ type: 'Text', text: /Auth: Rotate the signing key/ })).length).toBe(1)
+  const doneOut = await $.command.run({
+    command: 'upnext',
+    args: 'done',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 120 },
+  })
+  expect(doneOut.text).toContain('- [x] [Auth] Rotate the signing key')
   await ui.unmount()
 })
